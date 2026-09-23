@@ -1,0 +1,65 @@
+name: News Tracker - Daily AI/Tech Digest
+
+on:
+  schedule:
+    # Runs every hour — script checks if it's 11 AM Cairo time
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  run-news-tracker:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Check if it's 11 AM Cairo time
+        run: |
+          HOUR=$(python3 -c "
+          from zoneinfo import ZoneInfo
+          from datetime import datetime
+          print(datetime.now(ZoneInfo('Africa/Cairo')).hour)
+          ")
+          echo "Cairo hour: $HOUR"
+          if [ "$HOUR" != "11" ]; then
+            echo "Not 11 AM Cairo time, skipping..."
+            exit 0
+          fi
+          echo "✓ It's 11 AM Cairo — proceeding with tracker run."
+      
+      - name: Install dependencies
+        run: |
+          pip install -e "./src/tracker-core"
+          pip install -e ".[dev]"
+      
+      - name: Run news tracker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NOTIFICATION_CHANNEL: ${{ secrets.NOTIFICATION_CHANNEL }}
+        run: |
+          python main.py today --theme lain
+      
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-report-${{ github.run_id }}
+          path: reports/*.html
+          retention-days: 7
