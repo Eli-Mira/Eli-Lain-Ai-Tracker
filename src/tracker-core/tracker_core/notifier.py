@@ -105,7 +105,6 @@ class EmailNotifier(BaseNotifier):
         """Send email with report."""
         try:
             import aiosmtplib
-            from aiosmtp.controller import Controller
             from email.message import EmailMessage
             
             msg = EmailMessage()

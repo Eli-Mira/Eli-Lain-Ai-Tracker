@@ -81,11 +81,11 @@ class NewsTracker:
 
         # Notifier for alerts — load all credentials, MultiNotifier picks what it needs
         notif_config = {
-            "channel": os.getenv("NOTIFICATION_CHANNEL", "none"),
-            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", "").replace(" ", ""),
-            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
-            "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", "").replace(" ", ""),
-            "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", "").strip(),
+            "channel": os.getenv("NOTIFICATION_CHANNEL", "none").replace(" ", "").split("\n")[0],
+            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", "").replace(" ", "").split("\n")[0],
+            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip().split("\n")[0],
+            "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", "").replace(" ", "").split("\n")[0],
+            "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", "").strip().split("\n")[0],
             "email_host": os.getenv("EMAIL_HOST", "smtp.gmail.com"),
             "email_port": int(os.getenv("EMAIL_PORT") or "587"),
             "email_user": os.getenv("EMAIL_USER", "").strip(),
