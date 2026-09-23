@@ -96,7 +96,7 @@ class NewsTracker:
         self.notifier = get_notifier(notif_config)
 
         # Breaking news threshold (score above this triggers immediate push)
-        self.breaking_threshold = 0.8
+        self.breaking_threshold = 0.7
 
         self.last_run_date: datetime | None = None
 
@@ -369,6 +369,15 @@ def main():
             result = asyncio.run(tracker.run())
             tracker.generate_report()
             print(f"Today's tracker complete: {result['relevant_count']} relevant items")
+            
+            # Send a test notification to verify channels work
+            test_msg = (
+                f"🔔 Eli Lain AI Tracker — test notification\n"
+                f"Run complete: {result['relevant_count']} items fetched, "
+                f"{result.get('breaking', 0)} breaking, {result.get('regular', 0)} regular"
+            )
+            test_result = asyncio.run(tracker.notifier.send(test_msg))
+            print(f"Test notification sent: {test_result}")
         except Exception as e:
             print(f"ERROR: {e}")
             import traceback
