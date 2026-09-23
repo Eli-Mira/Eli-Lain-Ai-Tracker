@@ -79,19 +79,20 @@ class NewsTracker:
             health_record.is_disabled = h.get("is_disabled", False)
             health_record.total_items = h.get("total_items", 0)
 
-        # Notifier for alerts — load from env
-        notif_config = {"channel": os.getenv("NOTIFICATION_CHANNEL", "none")}
-        if notif_config["channel"] == "telegram":
-            notif_config["telegram_bot_token"] = os.getenv("TELEGRAM_BOT_TOKEN", "")
-            notif_config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID", "")
-        elif notif_config["channel"] == "discord":
-            notif_config["discord_bot_token"] = os.getenv("DISCORD_BOT_TOKEN", "")
-            notif_config["discord_channel_id"] = os.getenv("DISCORD_CHANNEL_ID", "")
-        elif notif_config["channel"] == "email":
-            notif_config["email_host"] = os.getenv("EMAIL_HOST", "smtp.gmail.com")
-            notif_config["email_port"] = int(os.getenv("EMAIL_PORT", "587"))
-            notif_config["email_user"] = os.getenv("EMAIL_USER", "")
-            notif_config["email_password"] = os.getenv("EMAIL_PASSWORD", "")
+        # Notifier for alerts — load all credentials, MultiNotifier picks what it needs
+        notif_config = {
+            "channel": os.getenv("NOTIFICATION_CHANNEL", "none"),
+            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
+            "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", ""),
+            "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", ""),
+            "email_host": os.getenv("EMAIL_HOST", "smtp.gmail.com"),
+            "email_port": int(os.getenv("EMAIL_PORT", "587")),
+            "email_user": os.getenv("EMAIL_USER", ""),
+            "email_password": os.getenv("EMAIL_PASSWORD", ""),
+            "email_from": os.getenv("EMAIL_FROM", os.getenv("EMAIL_USER", "")),
+            "email_to": [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()],
+        }
         self.notifier = get_notifier(notif_config)
 
         # Breaking news threshold (score above this triggers immediate push)

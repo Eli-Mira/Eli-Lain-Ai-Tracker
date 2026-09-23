@@ -170,10 +170,46 @@ class DiscordNotifier(BaseNotifier):
             return False
 
 
+class MultiNotifier(BaseNotifier):
+    """Send notifications through multiple channels simultaneously."""
+    
+    name = "multi"
+    
+    def __init__(self, notifiers: list[BaseNotifier]):
+        super().__init__()
+        self.notifiers = notifiers
+    
+    async def send(self, message: str) -> bool:
+        """Send to all channels. Returns True if ALL succeeded."""
+        import asyncio
+        
+        tasks = [n.send(message) for n in self.notifiers]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_ok = True
+        for notifier, result in zip(self.notifiers, results):
+            if isinstance(result, Exception):
+                logger.error(f"{notifier.name} notifier error: {result}")
+                all_ok = False
+            elif not result:
+                all_ok = False
+        
+        return all_ok
+
+
 def get_notifier(config: dict[str, Any]) -> BaseNotifier:
     """Create notifier from config."""
     channel = config.get("channel", "file")
-
+    
+    # Support comma-separated list: "telegram,discord,email"
+    if "," in channel:
+        channels = [c.strip() for c in channel.split(",") if c.strip()]
+        notifiers = []
+        for ch in channels:
+            sub_config = {**config, "channel": ch}
+            notifiers.append(get_notifier(sub_config))
+        return MultiNotifier(notifiers)
+    
     if channel == "telegram":
         return TelegramNotifier(
             bot_token=config["telegram_bot_token"],
