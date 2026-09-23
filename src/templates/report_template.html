@@ -1,11 +1,11 @@
-<!--
+{% raw %}<!--
   REPORT TEMPLATE — read before editing
   ============================================================================
   LOCKED  — the <style> block and the tag structure around each section.
             Changing these changes how every future report looks. Only touch
             if the brief itself changes (new brand, new layout).
-  EDITABLE — everything inside the two for loops below, and the two
-            <p class="meta"> lines. Add/remove items here freely — that's
+  EDITABLE — everything inside the two {% for %} loops below, and the two
+            <p class="meta"> lines. Add/remove *items* here freely — that's
             the whole point, this is what changes every run.
 
   DATA CONTRACT — report.py must pass:
@@ -18,6 +18,7 @@
   Removing a field used below will break rendering — grep for it first.
   ============================================================================
 -->
+{% endraw %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
