@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 # Add paths
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tracker-core" / "src"))
+sys.path.insert(0, str(Path(__file__).parent / "src" / "tracker-core"))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from tracker_core.schema import NewsItem, SourceType
