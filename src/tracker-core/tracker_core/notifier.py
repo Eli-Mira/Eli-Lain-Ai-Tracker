@@ -180,21 +180,22 @@ class MultiNotifier(BaseNotifier):
         self.notifiers = notifiers
     
     async def send(self, message: str) -> bool:
-        """Send to all channels. Returns True if ALL succeeded."""
+        """Send to all channels. Returns True if at least one succeeded."""
         import asyncio
         
         tasks = [n.send(message) for n in self.notifiers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        all_ok = True
+        any_ok = False
         for notifier, result in zip(self.notifiers, results):
             if isinstance(result, Exception):
                 logger.error(f"{notifier.name} notifier error: {result}")
-                all_ok = False
-            elif not result:
-                all_ok = False
+            elif result:
+                any_ok = True
+            else:
+                logger.warning(f"{notifier.name} notifier returned False")
         
-        return all_ok
+        return any_ok
 
 
 def get_notifier(config: dict[str, Any]) -> BaseNotifier:

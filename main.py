@@ -82,15 +82,15 @@ class NewsTracker:
         # Notifier for alerts — load all credentials, MultiNotifier picks what it needs
         notif_config = {
             "channel": os.getenv("NOTIFICATION_CHANNEL", "none"),
-            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-            "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", ""),
-            "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", ""),
+            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", "").replace(" ", ""),
+            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+            "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", "").replace(" ", ""),
+            "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", "").strip(),
             "email_host": os.getenv("EMAIL_HOST", "smtp.gmail.com"),
             "email_port": int(os.getenv("EMAIL_PORT", "587")),
-            "email_user": os.getenv("EMAIL_USER", ""),
-            "email_password": os.getenv("EMAIL_PASSWORD", ""),
-            "email_from": os.getenv("EMAIL_FROM", os.getenv("EMAIL_USER", "")),
+            "email_user": os.getenv("EMAIL_USER", "").strip(),
+            "email_password": os.getenv("EMAIL_PASSWORD", "").replace(" ", ""),
+            "email_from": os.getenv("EMAIL_FROM", os.getenv("EMAIL_USER", "")).strip(),
             "email_to": [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()],
         }
         self.notifier = get_notifier(notif_config)
