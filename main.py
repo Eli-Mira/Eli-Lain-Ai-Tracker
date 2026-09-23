@@ -365,9 +365,15 @@ def main():
             print()
 
     elif args.action == "today":
-        result = asyncio.run(tracker.run())
-        tracker.generate_report()
-        print(f"Today's tracker complete: {result['relevant_count']} relevant items")
+        try:
+            result = asyncio.run(tracker.run())
+            tracker.generate_report()
+            print(f"Today's tracker complete: {result['relevant_count']} relevant items")
+        except Exception as e:
+            print(f"ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
 
     elif args.action == "health":
         table = tracker.get_health_table()
