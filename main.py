@@ -87,7 +87,7 @@ class NewsTracker:
             "discord_bot_token": os.getenv("DISCORD_BOT_TOKEN", "").replace(" ", ""),
             "discord_channel_id": os.getenv("DISCORD_CHANNEL_ID", "").strip(),
             "email_host": os.getenv("EMAIL_HOST", "smtp.gmail.com"),
-            "email_port": int(os.getenv("EMAIL_PORT", "587")),
+            "email_port": int(os.getenv("EMAIL_PORT") or "587"),
             "email_user": os.getenv("EMAIL_USER", "").strip(),
             "email_password": os.getenv("EMAIL_PASSWORD", "").replace(" ", ""),
             "email_from": os.getenv("EMAIL_FROM", os.getenv("EMAIL_USER", "")).strip(),

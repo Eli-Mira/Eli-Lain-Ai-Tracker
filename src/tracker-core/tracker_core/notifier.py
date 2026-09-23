@@ -222,13 +222,14 @@ def get_notifier(config: dict[str, Any]) -> BaseNotifier:
             channel_id=config["discord_channel_id"]
         )
     elif channel == "email":
+        port = config.get("email_port", 587) or 587
         return EmailNotifier(
-            host=config["email_host"],
-            port=config.get("email_port", 587),
-            user=config["email_user"],
-            password=config["email_password"],
-            from_addr=config["email_from"],
-            to_addrs=config.get("email_to", [])
+            host=config.get("email_host", "smtp.gmail.com") or "smtp.gmail.com",
+            port=int(port) if port else 587,
+            user=config["email_user"] or "",
+            password=config["email_password"] or "",
+            from_addr=config.get("email_from") or config["email_user"] or "",
+            to_addrs=config.get("email_to") or []
         )
     elif channel == "none":
         return NullNotifier()
