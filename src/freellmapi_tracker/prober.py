@@ -24,20 +24,53 @@ DEFAULT_TEST_PAYLOAD = {
 }
 
 # Best lightweight model per platform for low-cost probing
+# Pulls from freellmapi DB — keys are platform strings from api_keys
 LIGHTWEIGHT_MODELS = {
-    "cloudflare": "@cf/qwen/qwen3-30b-a3b-fp8",
+    "cohere": "command-r-08-2024",          # c4ai-aya-expanse-32b works; command is faster
     "groq": "llama-3.1-8b-instant",
-    "google": "gemini-2.0-flash-exp",
-    "reka": "reka-flash",
-    "mistral": "mistral-small-latest",
-    "cohere": "command-r-08-2024",
-    "huggingface": "meta-llama/Llama-3.2-3B-Instruct",
+    "mistral": "codestral-2508",
+    "cloudflare": "@cf/aisingapore/gemma-sea-lion-v4-27b-it",  # exists in DB
+    "github": "gpt-4o-mini",               # GitHub Models free tier
+    "cerebras": "llama-3.1-8b",
     "openrouter": "google/gemini-2.0-flash-exp:free",
-    "cerebras": "llama3.1-8b",
-    "nvidia": "meta/llama-3.1-8b-instruct",
-    "zhipu": "glm-4-flash",
-    "custom": "MiniMax-Text-01",
+    "zhipu": "glm-4.5-flash",              # confirmed in DB
+    "agnes": "agnes-2.5-flash",            # confirmed in DB
+    "aion": "aion-labs/aion-2.0",           # confirmed in DB
+    "sealion": "aisingapore/Gemma-SEA-LION-v4-27B-IT",  # confirmed in DB
+    "routeway": "glm-4.5-flash",           # generic fallback
+    "navy": "deepseek-v4-flash",           # generic fallback
+    "electronhub": "codestral-latest",     # generic fallback
+    "bai": "codestral-latest",             # generic fallback
+    "bazaarlink": "deepseek/deepseek-v4-flash-0731free:free",  # confirmed in DB
+    "requesty": "google/gemma-4-31b-it",   # confirmed in DB
+    "reka": "reka-flash",                  # key-based ID in DB (19)
+    "anyapi": "codestral-latest",
+    "huggingface": "CohereLabs/aya-expanse-32b",  # confirmed in DB
+    "nvidia": "google/diffusiongemma-26b-a4b-it",  # confirmed in DB
+    "opencode": "codestral-latest",
+    "google": "gemini-2.5-flash",          # confirmed in DB
+    "nara": "agnes-2.5-flash",             # confirmed in DB
+    "llm7": "codestral-latest",            # confirmed in DB
+    "xkiro": "mistralai/codestral-2508",   # confirmed in DB
+    "unorouter": "deepseek-v4-flash:free", # confirmed in DB
+    "waterfall": "glm-4.5-flash",
+    "blaze": "gemini-2.0-flash",
+    "custom": "MiniMax-M2",               # confirmed in DB
 }
+
+# Platform → list of fallback models (used when primary returns 404)
+PLATFORM_FALLBACK_MODELS = {
+    "cloudflare": ["@cf/qwen/qwen3-30b-a3b-fp8", "@cf/meta/llama-4-scout-17b-16e-instruct"],
+    "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-specdec"],
+    "mistral": ["codestral-2508", "mistral-small-latest"],
+    "google": ["gemini-2.5-flash", "gemini-3.5-flash"],
+    "cohere": ["command-r-08-2024", "c4ai-aya-expanse-32b"],
+}
+
+
+def _get_model_for_platform(platform: str) -> str | None:
+    """Return the best test model for a platform, or None."""
+    return LIGHTWEIGHT_MODELS.get(platform)
 
 
 class AutoProber:
@@ -62,10 +95,25 @@ class AutoProber:
         provider: FreeProvider,
         model: str | None = None,
     ) -> ProviderProbeResult:
-        """Probe a single provider with a minimal request."""
-        # Pick model
-        test_model = model or provider.probe_model or LIGHTWEIGHT_MODELS.get(provider.platform)
-        if not test_model:
+        """Probe a single provider with a minimal request.
+
+        Tries the primary model first; on 404 (model not in catalog)
+        falls back to alternative models for that platform.
+        """
+        # Build ordered candidate list: requested > provider config > platform default > fallbacks
+        candidates: list[str] = []
+        if model:
+            candidates.append(model)
+        if provider.probe_model and provider.probe_model != model:
+            candidates.append(provider.probe_model)
+        default_model = LIGHTWEIGHT_MODELS.get(provider.platform)
+        if default_model and default_model not in candidates:
+            candidates.append(default_model)
+        for fb in PLATFORM_FALLBACK_MODELS.get(provider.platform, []):
+            if fb not in candidates:
+                candidates.append(fb)
+
+        if not candidates:
             return ProviderProbeResult(
                 provider_platform=provider.platform,
                 success=False,
@@ -74,6 +122,25 @@ class AutoProber:
                 error_message=f"No test model configured for platform {provider.platform}",
             )
         
+        last_result: ProviderProbeResult | None = None
+        for candidate in candidates:
+            result = await self._do_probe(candidate, provider.platform)
+            last_result = result
+            # 404 = model not in this provider's catalog — try next candidate
+            if result.http_status == 404:
+                continue
+            return result
+        
+        return last_result or ProviderProbeResult(
+            provider_platform=provider.platform,
+            success=False,
+            model_tested=candidates[0],
+            error_type="no_models",
+            error_message="All candidate models returned 404 (not in catalog)",
+        )
+    
+    async def _do_probe(self, test_model: str, platform: str) -> ProviderProbeResult:
+        """Run a single probe request against freellmapi."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -105,7 +172,7 @@ class AutoProber:
                     reset_at = response.headers.get("x-ratelimit-reset") or response.headers.get("x-ratelimit-reset-requests")
                     
                     return ProviderProbeResult(
-                        provider_platform=provider.platform,
+                        provider_platform=platform,
                         success=True,
                         model_tested=test_model,
                         http_status=200,
@@ -126,11 +193,13 @@ class AutoProber:
                     err_type = "raw_error"
                     err_code = ""
                 
-                # Classify error type
+                # Classify error type — ordered most-specific first
                 classified_type = "unknown"
-                if response.status_code == 401 or "auth" in err_msg.lower() or "key" in err_msg.lower():
+                msg_lower = err_msg.lower()
+                # Auth errors: explicit 401 or auth/invalid/expired key patterns (avoid bare "keys" in rate-limit text)
+                if response.status_code == 401 or any(kw in msg_lower for kw in ["invalid api key", "expired key", "authentication failed", "unauthorized", "api key not found", "invalid credentials"]):
                     classified_type = "auth"
-                elif response.status_code == 402 or "credit" in err_msg.lower() or "payment" in err_msg.lower() or "exhaust" in err_msg.lower():
+                elif response.status_code == 402 or any(kw in msg_lower for kw in ["credit", "payment", "billing", "insufficient quota", "usage limit"]):
                     classified_type = "quota"
                 elif response.status_code == 429 or "rate" in err_msg.lower():
                     classified_type = "rate_limit"
@@ -138,7 +207,7 @@ class AutoProber:
                     classified_type = "server_error"
                 
                 return ProviderProbeResult(
-                    provider_platform=provider.platform,
+                    provider_platform=platform,
                     success=False,
                     model_tested=test_model,
                     http_status=response.status_code,
@@ -149,7 +218,7 @@ class AutoProber:
                 
         except httpx.TimeoutException:
             return ProviderProbeResult(
-                provider_platform=provider.platform,
+                provider_platform=platform,
                 success=False,
                 model_tested=test_model,
                 error_type="timeout",
@@ -158,7 +227,7 @@ class AutoProber:
             )
         except Exception as e:
             return ProviderProbeResult(
-                provider_platform=provider.platform,
+                provider_platform=platform,
                 success=False,
                 model_tested=test_model,
                 error_type="network",
