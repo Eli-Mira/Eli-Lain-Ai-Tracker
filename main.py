@@ -412,12 +412,15 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     count = tracker.load_providers()
     print(f"      Loaded {count} providers")
 
-    # Capture pre-probe status for change detection
+    # Step 2: probe (skip in CI — freellmapi runs locally on Mira, not on GitHub runners)
     prev_statuses = {p.platform: p.status.value for p in tracker.provider_tracker.providers.values()}
-
-    print(f"[2/4] Probing all enabled providers via {tracker.freellmapi_url}...")
-    probed = await tracker.probe_providers()
-    print(f"      Probed and updated {probed} providers")
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"[2/4] Skipping probes (CI environment — freellmapi is local-only). Using persisted state.")
+        probed = 0
+    else:
+        print(f"[2/4] Probing all enabled providers via {tracker.freellmapi_url}...")
+        probed = await tracker.probe_providers()
+        print(f"      Probed and updated {probed} providers")
 
     print(f"[3/4] Discovering GitHub tools...")
     tools = await tracker.discover_tools()
