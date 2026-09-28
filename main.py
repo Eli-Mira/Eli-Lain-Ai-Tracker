@@ -412,6 +412,9 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     count = tracker.load_providers()
     print(f"      Loaded {count} providers")
 
+    # Capture pre-probe status for change detection
+    prev_statuses = {p.platform: p.status.value for p in tracker.provider_tracker.providers.values()}
+
     print(f"[2/4] Probing all enabled providers via {tracker.freellmapi_url}...")
     probed = await tracker.probe_providers()
     print(f"      Probed and updated {probed} providers")
@@ -424,6 +427,14 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     report_path = tracker.generate_report(include_providers=True, include_news=False, include_tools=False)
     print(f"      Report: {report_path}")
 
+    # Compute status changes (compare post-probe against pre-probe snapshot)
+    changes = []
+    for p in tracker.provider_tracker.providers.values():
+        old = prev_statuses.get(p.platform)
+        new = p.status.value if p.status else "unknown"
+        if old != new:
+            changes.append(f"{p.name}: {old} → {new}")
+
     # Show the provider table inline
     print("\n--- Provider Status ---")
     print(f"{'Name':<14} {'Status':<12} {'Detail'}")
@@ -434,14 +445,23 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     if tools:
         print("\n--- Top Tools Discovered ---")
         for t in tools[:10]:
-            print(f"  ⭐ {t['headline']}\n     {t['summary'][:80]}")
+            print(f"{t['headline']}\n     {t['summary'][:80]}")
             print(f"     {t['url']}")
+
+    # Status-change notification (minimalist)
+    if changes:
+        msg = "\n".join(f"  • {c}" for c in changes[:8])
+        try:
+            await tracker.notifier.send(f"⚡ EliLain status change:\n{msg}")
+        except Exception as e:
+            logger.warning(f"Status-change notification failed: {e}")
 
     return {
         "providers_loaded": count,
         "providers_probed": probed,
         "tools_found": len(tools),
         "report": str(report_path),
+        "status_changes": len(changes),
     }
 
 
