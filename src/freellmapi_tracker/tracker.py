@@ -46,7 +46,7 @@ class FreeProviderTracker:
             "reset_schedule": "Per-request limit applies",
         },
         "cerebras": {
-            "tier_type": ProviderTier.PAYWALLED,
+            "tier_type": ProviderTier.NO_FREE_TIER,
             "tier_details": "Was free, now behind paywall (2026-09-28)",
             "reset_schedule": "N/A (paywalled)",
         },
