@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-**LOCAL REGRESSION PASS; independent pre-commit review and fresh hosted acceptance OPEN.** These changes are staged but not committed, pushed or deployed. The read-only GitHub check at `2026-10-01T17:41:04.379705+00:00` still found remote `main` at `f59b8c3cc2dc05cbc5afefbf5c92b75d8521e330`, `CLOUDFLARE_PUBLISH_ENABLED=false`, and the existing `PUBLISH_ENABLED=true`.
+**REVIEWED SHIPPED REPAIRS / FRESH PUBLICATION PASS; customer release OPEN.** Complete review `deleg_8571a6cf` passed all 21 files / 36 hunks, matched unchanged staged digest `d034d4cc7de09e15c2ba230356a4d0038907a009d83965b5a392167326cc0656`. Reviewed runtime `a8c2478` was committed/pushed; fresh manual CI **36904275396** succeeded and deployed 3,068,597 bytes / 2,099 rows, SHA256 `d2172e330e7f2cf2af345856adf05221812dd01bbca84fe9451566d578050104`. Exact CI/actual served byte comparison, both new attachment confirmations and 46 actual-served-file Chromium checks passed. Daily Pages recurrence was enabled and read back `true` afterward; Netlify remains the mirror. See `release-six-bugs-hosted-verification.md`. The saved-state/local artifact and earlier gate readback sections below are dated pre-publication evidence, not current hosting state.
 
-No live provider probe, real summarizer request, paid inference, router mutation, owner-winner selection or destructive Skills.sh dedupe was performed. All production-path request tests use simulated HTTP transports and synthetic credentials. The independent reviewer is `deleg_1d830f47`; a frozen 17-file diff is under Hermes scratch. Its verdict is pending, not assumed.
+No live provider probe, real summarizer request, paid inference, router mutation, owner-winner selection or destructive Skills.sh dedupe was performed. Production-path provider/summary request tests use simulated HTTP transports and synthetic credentials. First reviewer `deleg_1d830f47` failed closed because its tool-copied input was truncated; that package was replaced with directly captured, structurally validated review-v2. It was never approval. Reviewer suggestions for CLI failure branches/workflow topology tests are non-blocking deferred coverage, not introduced production findings.
 
 ## Repairs independently exercised by the parent
 
