@@ -225,6 +225,7 @@ class FreeProviderTracker:
                 return 0
             conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
             cur = conn.cursor()
             
             rows = cur.execute("SELECT id, platform, label, status, enabled FROM api_keys ORDER BY enabled DESC, id").fetchall()
@@ -303,21 +304,45 @@ class FreeProviderTracker:
             probe_model=LIGHTWEIGHT_MODELS.get(platform, ""),
         )
     
-    def load_probe_catalog(self) -> dict[str, list[str]]:
-        """Read actual enabled model bindings; generic owned_by is not upstream identity."""
+    def load_probe_catalog(self, *, qualified: bool = False) -> dict[str, list[str]]:
+        """Read enabled bindings; optionally pin the router's exact member IDs.
+
+        v0.13.2 lists unified group slugs, not these member IDs. A bare model ID
+        can fail over to another upstream; ``platform:model_id`` pins a member.
+        Keep the default raw mapping for legacy callers; qualified mappings must
+        be passed as AutoProber.bound_model_routes, not as HTTP-listed aliases.
+        """
+        import re
         import sqlite3
         if not self.db_path.is_file():
             return {}
         conn = None
         try:
             conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
-            rows = conn.execute("SELECT platform, model_id, key_id FROM models WHERE enabled=1 ORDER BY id" if "id" in {r[1] for r in conn.execute("PRAGMA table_info(models)")} else "SELECT platform, model_id, key_id FROM models WHERE enabled=1 ORDER BY model_id").fetchall()
+            conn.execute("PRAGMA query_only=ON")
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(models)")}
+            scope_column = "endpoint_scope" if "endpoint_scope" in columns else "''"
+            order_column = "id" if "id" in columns else "model_id"
+            rows = conn.execute(f"SELECT platform, model_id, key_id, {scope_column} FROM models WHERE enabled=1 ORDER BY {order_column}").fetchall()
             catalog = {}
-            for platform, model_id, key_id in rows:
+            for platform, model_id, key_id, scope in rows:
                 provider = self.providers.get(platform)
-                if provider and provider.probe_enabled and provider.status != ProviderStatus.DISABLED and key_id in (None, provider.freellmapi_key_id) and isinstance(model_id, str):
-                    if model_id not in catalog.setdefault(platform, []):
-                        catalog[platform].append(model_id)
+                if not (provider and provider.probe_enabled and provider.status != ProviderStatus.DISABLED
+                        and (key_id is None or (type(key_id) is int and key_id == provider.freellmapi_key_id))
+                        and isinstance(model_id, str) and model_id.strip()):
+                    continue
+                candidate = model_id
+                if qualified:
+                    candidate = f"{platform}:{model_id}"
+                    if platform == "custom":
+                        # Do not probe an unscoped relay or select another endpoint.
+                        if key_id is None or not isinstance(scope, str) or not scope.strip():
+                            continue
+                        without_scheme = re.sub(r"^[a-z][a-z0-9+.-]*://", "", scope, flags=re.I)
+                        handle = re.sub(r"[^a-z0-9.]+", "-", without_scheme.lower()).strip("-.") or "endpoint"
+                        candidate += f"#{handle}"
+                if candidate not in catalog.setdefault(platform, []):
+                    catalog[platform].append(candidate)
             return catalog
         except sqlite3.Error as exc:
             logger.warning("Model binding catalog unavailable (%s)", type(exc).__name__)
@@ -359,7 +384,7 @@ class FreeProviderTracker:
     
     async def _probe_single(self, provider: FreeProvider) -> ProviderProbeResult | None:
         """Probe a single provider and return result."""
-        prober = AutoProber()
+        prober = AutoProber(bound_model_routes=self.load_probe_catalog(qualified=True))
         return await prober.probe_provider(provider)
     
     def _generate_action(self, provider: FreeProvider, result: ProviderProbeResult) -> str:
@@ -367,7 +392,7 @@ class FreeProviderTracker:
         status, reason = result.to_status()
         
         if status == ProviderStatus.LIVE:
-            return "No action needed - free tier active"
+            return "No action needed for verified completion; free entitlement and reset limits are not established by this probe"
         elif status == ProviderStatus.BROKEN_KEY:
             return f"Key invalid ({result.http_status}). Get new key from: {self._get_dashboard_url(provider.platform)}"
         elif status == ProviderStatus.EXHAUSTED:

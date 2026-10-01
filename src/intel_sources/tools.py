@@ -1,6 +1,7 @@
 """Read-only, broad skill/repository discovery. Nothing is installed or executed."""
 import asyncio
 import hashlib
+from collections import deque
 from datetime import datetime, timezone
 import re
 from urllib.parse import urljoin, urlsplit
@@ -311,13 +312,97 @@ def _classify(row):
 
 METADATA_LIMIT = 40
 
+# Selection hints, not capability tags or approval. Match titles/slugs, never a
+# publisher allowlist: the same workflow can be supplied by different projects.
+# Each group orders specific signals before generic hints; popularity only
+# breaks ties within that specificity level. Generic 'audit' is not security.
+METADATA_HINTS = {
+    'development': (r'\b(develop\w*|debug\w*|refactor\w*|code.review)\b',
+                    r'\b(review\w*|planning|workflow\w*)\b'),
+    'testing': (r'\b(tests?|testing|tdd|pytest|playwright|verification)\b', r'\bquality\b'),
+    'data': (r'\b(data\w*|sql|database\w*|analytics|etl|pandas|postgres\w*|supabase|machine.learning)\b',
+             r'\b(llms?|mcp|agents?)\b'),
+    'security': (r'\b(secur\w*|vulnerabilit\w*|auth\w*|owasp|cryptograph\w*)\b', r'\baudit\w*\b'),
+    'project-stack': (r'\b(python|pyside\w*|pyqt\w*|qt|camera\w*|vision|opencv|gesture\w*|pos|payment\w*|transaction\w*)\b',
+                      r'\b(react|frontend|accessibility)\b'),
+}
+
+
+def _metadata_candidates(candidates):
+    """Reserve half the slots for workflow hints, then round-robin public views."""
+    def rank(row, view):
+        value = _integer(row['evidence'].get('views', {}).get(view, {}).get('rank'))
+        return value if value is not None and value > 0 else float('inf')
+
+    # A fixed view order and identity tie-breaker make selection independent of
+    # arrival/input order. Missing ranks are last, not invented as top ranks.
+    ordered = sorted(candidates, key=lambda row: (
+        *(rank(row, view) for view in SKILLS_VIEWS), row['id']))
+    queues = {group: deque() for group in METADATA_HINTS}
+    priorities = {group: {} for group in METADATA_HINTS}
+    hints = {}
+    for row in ordered:
+        fields = {'headline': row['headline'], 'slug': row['evidence']['skill_id'].rsplit('/', 1)[-1]}
+        matches = []
+        for group, patterns in METADATA_HINTS.items():
+            for priority, pattern in enumerate(patterns):
+                for field, value in fields.items():
+                    match = re.search(pattern, value.replace('_', ' '), re.I)
+                    if match:
+                        matches.append({'group': group, 'field': field, 'term': match.group()})
+                        priorities[group].setdefault(row['id'], priority)
+            if row['id'] in priorities[group]:
+                queues[group].append(row)
+        hints[row['id']] = matches
+    # Stable sorting preserves the observed rank/identity ordering within each
+    # specificity tier, without letting generic popular titles consume it all.
+    queues = {group: deque(sorted(queue, key=lambda row: priorities[group][row['id']]))
+              for group, queue in queues.items()}
+    selected, seen = [], set()
+    budget = max(0, METADATA_LIMIT)
+
+    def take_round_robin(queues, ceiling, prefix):
+        while len(selected) < ceiling:
+            added = False
+            for lane, queue in queues.items():
+                while queue and queue[0]['id'] in seen:
+                    queue.popleft()
+                if queue and len(selected) < ceiling:
+                    row = queue.popleft()
+                    selected.append(row)
+                    seen.add(row['id'])
+                    row['evidence']['metadata_selection'] = {
+                        'lane': prefix + lane, 'order': len(selected),
+                        'hint_matches': hints[row['id']], 'advisory_only': True}
+                    added = True
+            if not added:
+                break
+
+    take_round_robin(queues, (budget + 1) // 2, 'workflow:')
+    view_queues = {view: deque(sorted(
+        (row for row in ordered if view in row['evidence'].get('views', {})),
+        key=lambda row: (rank(row, view), row['id']))) for view in SKILLS_VIEWS}
+    take_round_robin(view_queues, budget, 'view:')
+    # Metadata-only callers may lack views; still fill unused slots safely.
+    take_round_robin({'unranked': deque(ordered)}, budget, 'fallback:')
+    return selected
+
 
 async def _skill_metadata(client, rows, source):
     """Read only meta description and topic labels, never SKILL.md files or code."""
     candidates = [row for row in rows if not row['summary']]
+    selected = _metadata_candidates(candidates)
+    workflow_selected = sum(row['evidence']['metadata_selection']['lane'].startswith('workflow:') for row in selected)
     report = {'budget': METADATA_LIMIT, 'attempted': 0,
               'enriched': 0, 'descriptions': 0, 'topics_available': 0, 'empty': 0,
-              'errors': 0, 'not_scanned': max(0, len(candidates) - METADATA_LIMIT),
+              'errors': 0, 'not_scanned': len(candidates) - len(selected),
+              'selection': {'method': 'workflow-hints-then-view-round-robin-v1',
+                            'candidate_count': len(candidates), 'selected': len(selected),
+                            'workflow_budget': (max(0, METADATA_LIMIT) + 1) // 2,
+                            'workflow_selected': workflow_selected,
+                            'broad_selected': len(selected) - workflow_selected,
+                            'hint_groups': list(METADATA_HINTS),
+                            'scope': 'Title/slug keyword hints are advisory prioritization, not verified fit; specific signals precede generic hints within each group; remaining slots sample all observed views.'},
               'scope': 'Bounded public skill detail meta descriptions and topics; no scripts, prompts, or external URLs followed.'}
     source['coverage']['metadata'] = report
     for row in candidates:
@@ -367,7 +452,7 @@ async def _skill_metadata(client, rows, source):
             row['evidence']['metadata'] = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'}
             report['errors'] += 1
 
-    await asyncio.gather(*(enrich(row) for row in candidates[:METADATA_LIMIT]))
+    await asyncio.gather(*(enrich(row) for row in selected))
     if report['errors']:
         if source['status'] == 'ok':
             source['status'] = 'partial'

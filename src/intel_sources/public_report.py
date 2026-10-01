@@ -1,7 +1,7 @@
 """Fail-closed public HTML boundary. Never hand internal dictionaries to a renderer."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from contextlib import closing
 import base64
@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 from .store import parse_time
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
+MAX_PUBLIC_ITEMS = 10_000
+MAX_PUBLIC_PAYLOAD_BYTES = 8 * 1024 * 1024
+MAX_PUBLIC_HTML_BYTES = 16 * 1024 * 1024
 PUBLIC_SOURCES = {
     "openrouter-models": ("https://openrouter.ai/api/v1/models", "Public model listing; not inference verification."),
     "openrouter-providers": ("https://openrouter.ai/api/v1/providers", "Public hosting-provider listing; not account availability."),
@@ -43,7 +46,22 @@ def public_http_url(value: Any) -> str:
         return ""
     if any(c in value for c in "\\<>\"'`%?#"):
         return ""
-    if re.search(r"(?i)(?:sk-|gh[pousr]_|github_pat_|bearer|password|api[_-]?key|access[_-]?token|secret)", value):
+    # A URL reaching this point is pure ASCII word/path punctuation. Anything
+    # outside that set (curly quotes, ellipsis, unicode homoglyphs) is a
+    # redaction or obfuscation marker, not a usable public link.
+    if not re.fullmatch(r"[A-Za-z0-9\-._~:/?=,!$&'()*+]+", value):
+        return ""
+    # Match credential SHAPES, not substrings: real vendor keys are a fixed
+    # prefix plus a long opaque body, and named secrets appear in `name=value`
+    # form. A bare substring test discarded legitimate public catalog rows whose
+    # names merely contain those words (skills.sh/.../ask-matt,
+    # .../email-and-password-best-practices). The bodies are long enough to
+    # clear ordinary words: a real `sk-` key is far longer than `sk-matt`.
+    if re.search(r"(?i)(?<![\w-])(?:sk-[A-Za-z0-9_-]{6,}|gh[pousr]_[A-Za-z0-9]{16,}"
+                 r"|github_pat_[A-Za-z0-9_]{20,}|bearer\s+[A-Za-z0-9._~+/=-]{12,})", value):
+        return ""
+    if re.search(r"(?i)\b(?:api[_-]?key|access[_-]?token|password|secret|token)"
+                 r"\s*[=:]\s*[^\s&]{3,}", value):
         return ""
     try:
         parsed = urlsplit(value)
@@ -83,7 +101,11 @@ def _public_identity(row: dict[str, Any], source: str) -> tuple[str, str] | None
     if source == "github-trending" and slug.casefold() == "eli-mira/eli-lain-ai-tracker":
         return None
     parts = slug.split("/")
-    if len(parts) != segments or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}", part) for part in parts):
+    # Only OpenRouter's first (vendor) segment has a documented alias marker.
+    # Keep the literal identifier/path; never decode escapes or relax other sources.
+    validated_parts = [part[1:] if source == 'openrouter-models' and index == 0 and part.startswith('~') else part
+                       for index, part in enumerate(parts)]
+    if len(parts) != segments or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}", part) for part in validated_parts):
         return None
     parsed = urlsplit(url)
     expected = path_prefix + slug
@@ -111,21 +133,23 @@ def _public_title(value: Any, identifier: str, source: str) -> str:
 
 # Only closed vocabularies and bounded numbers cross the public metadata seam.
 # Cached prose, evidence URLs, pricing overrides and arbitrary nested fields do not.
-MODALITIES = frozenset({'text', 'image', 'audio', 'video', 'file', 'embeddings', 'speech', 'transcription', 'rerank'})
+MODALITIES = frozenset({'text', 'image', 'audio', 'video', 'file', 'embeddings', 'speech', 'transcription', 'rerank', 'decisions'})
 PARAMETERS = frozenset({'tools', 'tool_choice', 'reasoning', 'reasoning_effort', 'include_reasoning',
     'response_format', 'structured_outputs', 'temperature', 'top_p', 'top_k', 'seed',
     'max_tokens', 'max_completion_tokens', 'stop', 'frequency_penalty', 'presence_penalty',
-    'repetition_penalty', 'logprobs', 'top_logprobs', 'min_p', 'web_search_options'})
+    'repetition_penalty', 'logprobs', 'top_logprobs', 'min_p', 'web_search_options',
+    'parallel_tool_calls', 'verbosity', 'logit_bias', 'top_a', 'prediction'})
 COUNTRIES = frozenset('US GB DE FR CA AU CN JP KR SG IN NL FI SE NO CH IE AE IL BR ES IT PL TW HK RU ZA'.split())
 LANGUAGES = frozenset({'Python', 'TypeScript', 'JavaScript', 'Rust', 'Go', 'Shell', 'C++', 'C',
     'PLSQL', 'Java', 'HTML', 'CSS', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Dart', 'Lua',
     'R', 'Scala', 'Julia', 'Elixir', 'Haskell', 'Zig', 'Jupyter Notebook', 'Dockerfile', 'Vue'})
 CATALOG_TAGS = frozenset({'Text', 'Tools', 'Vision', 'Reasoning', 'Audio', 'Video', 'Image',
-    'Embeddings', 'Cache', 'ComputerUse', 'Files', 'WebSearch', '1M', '2M', '128K', '200K'})
-ENDPOINT_FORMATS = frozenset({'openai', 'anthropic', 'gemini', 'responses', 'chat', 'embeddings', 'images', 'audio'})
+    'Embeddings', 'Embedding', 'Open Weights', 'Task', 'Deprecated', 'Cache', 'ComputerUse', 'Files', 'WebSearch', '1M', '2M', '128K', '200K'})
+ENDPOINT_FORMATS = frozenset({'openai', 'anthropic', 'gemini', 'responses', 'chat', 'embeddings', 'images', 'audio',
+    'embedding', 'image-generation', 'aihorde', 'openai-alpha-search', 'openai-response', 'openai-response-compact', 'typesafe-decisions'})
 
 
-def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
+def _public_metadata(row: dict[str, Any], source: str, now: datetime) -> list[dict[str, str]]:
     """Reconstruct typed public catalog fields; NEVER copy an evidence dictionary.
 
     Id/URL binding is checked by the caller. Units are source-specific: OpenRouter
@@ -155,7 +179,20 @@ def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
             if selected:
                 emit(label, ', '.join(selected))
 
-    def price(label: str, value: Any, *, per_token: bool = False, per_request: bool = False) -> None:
+    def flag(label: str, value: Any) -> None:
+        if type(value) is bool:
+            emit(label, str(value).lower())
+
+    def calendar_date(label: str, value: Any) -> None:
+        if isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                return
+            emit(label, value)
+
+    def price(label: str, value: Any, *, per_token: bool = False, per_request: bool = False,
+              unit: str | None = None) -> None:
         if type(value) not in (str, int, float):
             return
         text = str(value)
@@ -172,12 +209,29 @@ def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
                 # Prevent giant decimals and hidden underflow turning into "free".
                 if amount != 0 and amount < Decimal('0.000000000001'):
                     return
-                formatted = format(amount.quantize(Decimal('0.000000000001')), 'f').rstrip('0').rstrip('.')
-                emit(label, f'USD {formatted or "0"} / {"request" if per_request else "million tokens"}')
+                formatted = format(amount, 'f')
+                if '.' in formatted:
+                    formatted = formatted.rstrip('0').rstrip('.')
+                emit(label, f'USD {formatted} / {unit or ("request" if per_request else "million tokens")}')
         except InvalidOperation:
             return
 
     if source == 'openrouter-models':
+        calendar_date('Catalog expiration date', evidence.get('expiration_date'))
+        calendar_date('Catalog knowledge cutoff', evidence.get('knowledge_cutoff'))
+        alias = evidence.get('alias_target')
+        if isinstance(alias, dict) and isinstance(alias.get('slug'), str):
+            slug = alias['slug']
+            if _public_identity({'id': 'openrouter:model:' + slug, 'url': 'https://openrouter.ai/' + slug}, source):
+                emit('Catalog alias target', slug)
+        reasoning = evidence.get('reasoning')
+        if isinstance(reasoning, dict):
+            for key, label in [('mandatory', 'Reasoning mandatory'), ('default_enabled', 'Reasoning default enabled'),
+                               ('supports_max_tokens', 'Reasoning supports max tokens')]:
+                flag(label, reasoning.get(key))
+            efforts = frozenset({'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'})
+            enums('Reasoning efforts', reasoning.get('supported_efforts'), efforts)
+            enum('Reasoning default effort', reasoning.get('default_effort'), efforts)
         integer('Context', evidence.get('context_length'), suffix=' tokens', minimum=1, maximum=100_000_000)
         top = evidence.get('top_provider')
         if isinstance(top, dict):
@@ -191,16 +245,22 @@ def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
         if isinstance(pricing, dict):
             price('Listed input price', pricing.get('prompt'), per_token=True)
             price('Listed output price', pricing.get('completion'), per_token=True)
-            for key, label in [('input_cache_read', 'Listed cache read price'), ('input_cache_write', 'Listed cache write price')]:
+            for key, label in [('input_cache_read', 'Listed cache read price'), ('input_cache_write', 'Listed cache write price'),
+                ('input_cache_write_1h', 'Listed 1h cache write price'), ('audio', 'Listed audio input price'),
+                ('audio_output', 'Listed audio output price'), ('image_token', 'Listed image token price'),
+                ('input_audio_cache', 'Listed audio cache price'), ('internal_reasoning', 'Listed internal reasoning price')]:
                 price(label, pricing.get(key), per_token=True)
             price('Listed request price', pricing.get('request'), per_request=True)
+            price('Listed input image price', pricing.get('image'), unit='input image')
+            price('Listed output image price', pricing.get('image_output'), unit='output image')
+            price('Listed web search price', pricing.get('web_search'), unit='web search')
             if isinstance(pricing.get('overrides'), list) and pricing['overrides']:
                 emit('Pricing scope', 'Base rates; tiered pricing present — consult source')
     elif source == 'openrouter-providers':
         enum('Headquarters country', evidence.get('headquarters'), COUNTRIES)
         enums('Datacenter countries', evidence.get('datacenters'), COUNTRIES)
     elif source == 'unorouter-models':
-        enum('Model type', evidence.get('type'), frozenset({'text', 'image', 'audio', 'video', 'embeddings'}))
+        enum('Model type', evidence.get('type'), frozenset({'text', 'image', 'audio', 'video', 'embedding', 'embeddings'}))
         enums('Catalog tags', evidence.get('tags'), CATALOG_TAGS)
         enums('Endpoint formats', evidence.get('supported_endpoint_types'), ENDPOINT_FORMATS)
         pricing = evidence.get('pricing')
@@ -208,9 +268,13 @@ def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
             if pricing.get('is_fixed_price') is False:
                 price('Listed input price', pricing.get('input_price'))
                 price('Listed output price', pricing.get('output_price'))
+                price('Catalog original input price', pricing.get('original_input_price'))
+                price('Catalog original output price', pricing.get('original_output_price'))
             elif pricing.get('is_fixed_price') is True:
                 price('Listed fixed price', pricing.get('fixed_price'), per_request=True)
-        for key, label in [('is_free', 'Catalog free flag'), ('online', 'Catalog online flag')]:
+                price('Catalog original fixed price', pricing.get('original_fixed_price'), per_request=True)
+                emit('Fixed pricing scope', 'Catalog request rate; task and variant billing conditions unverified')
+        for key, label in [('is_free', 'Catalog free flag'), ('online', 'Catalog online flag'), ('chat', 'Catalog chat flag')]:
             if type(evidence.get(key)) is bool:
                 emit(label, str(evidence[key]).lower())
     elif source == 'github-trending':
@@ -232,6 +296,22 @@ def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
                 if isinstance(entry, dict):
                     integer(f'{view} rank', entry.get('rank'), minimum=1, maximum=10_000_000)
                     integer(f'{view} installs', entry.get('installs'))
+    if source in ('github-trending', 'skills-sh'):
+        detail = evidence.get('metadata')
+        if isinstance(detail, dict) and all(
+            _public_identity({'id': row['id'], 'url': detail[key]}, source) is not None
+            for key in ('url', 'final_url') if key in detail):
+            enum('Detail metadata status', detail.get('status'), frozenset({'ok', 'empty', 'error', 'not-scanned', 'not-attempted'}))
+            observed = _timestamp(detail.get('checked_at'), now)
+            if observed:
+                emit('Detail observed at', observed)
+            integer('Detail HTTP status', detail.get('http_status'), minimum=100, maximum=599)
+            digest = detail.get('sha256')
+            if isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest):
+                emit('Detail body SHA-256', digest)
+            flag('Detail description available', detail.get('description_available'))
+            flag('Detail topics available', detail.get('topics_available'))
+            enum('Detail description field', detail.get('description_field'), frozenset({'meta[name=description]'}))
     return result
 
 
@@ -265,8 +345,40 @@ def _public_windows(source: str, row: dict[str, Any]) -> str:
     return ' Saved public windows: ' + '; '.join(details) + '.' if details else ''
 
 
+def _public_source_details(row: dict[str, Any]) -> str:
+    """Source diagnostics are claims about collection, never operational proof."""
+    coverage = row.get('coverage')
+    if not isinstance(coverage, dict):
+        return ''
+    details = []
+    for key, label in [('returned_count', 'returned'), ('accepted_count', 'accepted'),
+                       ('invalid_count', 'invalid'), ('duplicate_count', 'duplicate'), ('declared_total', 'declared total')]:
+        value = coverage.get(key)
+        if type(value) is int and 0 <= value <= 10_000_000:
+            details.append(f'{label}: {value:,}')
+    for key, label in [('has_more', 'has more'), ('pagination_followed', 'pagination followed')]:
+        if type(coverage.get(key)) is bool:
+            details.append(f'{label}: {str(coverage[key]).lower()}')
+    if coverage.get('output_modalities') == 'all':
+        details.append('output modalities: all')
+    for key, label in [('http_cache_age_seconds', 'HTTP cache age'), ('http_cache_max_age_seconds', 'HTTP cache max age')]:
+        value = coverage.get(key)
+        if type(value) is int and 0 <= value <= 10_000_000_000:
+            details.append(f'{label}: {value:,} seconds')
+    cache = coverage.get('http_cache_freshness')
+    if isinstance(cache, str) and cache in ('within-max-age', 'exceeds-max-age', 'unknown'):
+        details.append(f'HTTP cache freshness: {cache}')
+    metadata = coverage.get('metadata')
+    if isinstance(metadata, dict):
+        for key in ('budget', 'attempted', 'enriched', 'descriptions', 'topics_available', 'empty', 'errors', 'not_scanned'):
+            value = metadata.get(key)
+            if type(value) is int and 0 <= value <= 10_000_000:
+                details.append(f'detail {key.replace("_", " ")}: {value:,}')
+    return ' Saved collection diagnostics: ' + '; '.join(details) + '.' if details else ''
+
+
 def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
-                         max_items_per_source: int = 100) -> dict[str, Any]:
+                         max_items_per_source: int | None = None) -> dict[str, Any]:
     """Project saved public discovery observations into the unchanged Lain contract."""
     if (not isinstance(state, dict) or not isinstance(state.get("items"), list)
             or not isinstance(state.get("sources"), list)):
@@ -275,17 +387,22 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("render time must include a timezone")
     now = now.astimezone(timezone.utc)
-    if type(max_items_per_source) is not int or not 1 <= max_items_per_source <= 200:
+    if max_items_per_source is not None and (type(max_items_per_source) is not int or not 1 <= max_items_per_source <= 200):
         raise ValueError("export limit must be an integer from 1 to 200")
     sources = {s["name"]: s for s in state.get("sources", [])
                if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"] in PUBLIC_SOURCES}
     private_sources = {name for name, source in sources.items()
                        if isinstance(source.get('coverage'), dict)
-                       and source['coverage'].get('mode') == 'api'}
+                       and (source['coverage'].get('mode') == 'api'
+                            or source['coverage'].get('scope') in ('key-accessible', 'local-aggregated'))}
     sources = {name: source for name, source in sources.items() if name not in private_sources}
     tools = []
     counts = {name: 0 for name in PUBLIC_SOURCES}
     seen = set()
+    saved_counts = {name: 0 for name in PUBLIC_SOURCES}
+    for row in state['items']:
+        if isinstance(row, dict) and isinstance(row.get('source'), str) and row['source'] in saved_counts:
+            saved_counts[row['source']] += 1
     candidates = [r for r in state.get("items", []) if isinstance(r, dict)
                   and isinstance(r.get("source"), str) and isinstance(r.get("id"), str)]
     for row in sorted(candidates, key=lambda r: (r["source"], r["id"])):
@@ -322,10 +439,12 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
                                                if isinstance(t, str) and t in PROJECT_TYPES})
                           if isinstance(row.get("project_types"), list) else [],
                       "freshness": freshness, "evidence": [evidence]})
-        metadata = _public_metadata(row, source)
+        metadata = _public_metadata(row, source, now)
         if metadata:
             tools[-1]['public_metadata'] = metadata
         counts[source] += 1
+        if len(tools) > MAX_PUBLIC_ITEMS:
+            raise ValueError('public inventory exceeds row limit')
     full_inventory = tools
     inventory_counts = dict(counts)
     discovery = [{"id": row["id"], "headline": row["headline"], "url": row["url"],
@@ -351,24 +470,34 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
     tools = []
     counts = {name: 0 for name in PUBLIC_SOURCES}
     for row in full_inventory:
-        if counts[row["source"]] < max_items_per_source:
+        if max_items_per_source is None or counts[row["source"]] < max_items_per_source:
             tools.append(row)
             counts[row["source"]] += 1
     if recommendations:
         recommendations["recommendation_coverage"]["exported_count"] = len(tools)
     public_sources = []
-    for name, row in sources.items():
+    for name in sorted(set(sources) | {name for name, count in inventory_counts.items() if count}):
+        row = sources.get(name, {})
         url, coverage = PUBLIC_SOURCES[name]
         status = row.get("status") if row.get("status") in ("ok", "partial", "error", "skipped") else "unverified"
         public_sources.append({"name": name, "status": status, "checked_at": _timestamp(row.get("checked_at"), now),
                                "item_count": counts[name], "url": url,
-                               "coverage": (f"{coverage} Export bounded to {max_items_per_source} rows per source; counts are exported rows. "
+                               "coverage": (f"{coverage} " + (
+                                            "Complete validated saved inventory; counts are exported rows. " if max_items_per_source is None else
+                                            f"Export bounded to {max_items_per_source} rows per source by caller; counts are exported rows. ") +
                                             f"Valid saved public inventory: {inventory_counts[name]:,} rows."
-                                            + _public_windows(name, row))})
-    return {**recommendations, "api_items": [], "news_items": [], "tool_items": tools, "source_items": public_sources,
+                                            f" Retained validated public inventory: {inventory_counts[name]:,} rows; exported: {counts[name]:,}; "
+                                            f"omitted by caller cap: {inventory_counts[name] - counts[name]:,}."
+                                            f" Saved source rows: {saved_counts[name]:,}; excluded by public policy or duplicate identity: "
+                                            f"{saved_counts[name] - inventory_counts[name]:,}."
+                                            + _public_windows(name, row) + _public_source_details(row))})
+    payload = {**recommendations, "api_items": [], "news_items": [], "tool_items": tools, "source_items": public_sources,
             "change_items": [], "action_items": [], "report_date": now.strftime("%Y-%m-%d"),
             "generated_at": now.isoformat(), "persona_image_url": None, "baseline": False,
             "runtime_source": "Public sanitized export of saved observations; not a fresh fetch. Provider statuses, changes, actions and news are excluded, not evaluated by this export. Private source coverage is omitted."}
+    if len(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) > MAX_PUBLIC_PAYLOAD_BYTES:
+        raise ValueError('public payload exceeds maximum size')
+    return payload
 
 
 def read_saved_inputs(state_path: str | Path, news_db_path: str | Path, *,
@@ -412,6 +541,8 @@ def _standalone_html(html: str) -> str:
     """Keep the original markup/styles/filter; block all automatic network access."""
     from bs4 import BeautifulSoup
 
+    if len(html.encode('utf-8')) > MAX_PUBLIC_HTML_BYTES:
+        raise ValueError('public HTML exceeds maximum size')
     soup = BeautifulSoup(html, "html.parser")
     if soup.select("script[src], link, img, iframe, object, embed, form, base, audio, video, source"):
         raise ValueError("public template contains an external or active dependency")
@@ -428,13 +559,16 @@ def _standalone_html(html: str) -> str:
               "object-src 'none'; media-src 'none'; base-uri 'none'; form-action 'none'")
     if '<meta charset="UTF-8">' not in html:
         raise ValueError("public template head dependency is unsupported")
-    return html.replace('<meta charset="UTF-8">', '<meta charset="UTF-8">\n'
+    standalone = html.replace('<meta charset="UTF-8">', '<meta charset="UTF-8">\n'
                         f'<meta http-equiv="Content-Security-Policy" content="{policy}">\n'
                         '<meta name="referrer" content="no-referrer">', 1)
+    if len(standalone.encode('utf-8')) > MAX_PUBLIC_HTML_BYTES:
+        raise ValueError('public HTML exceeds maximum size')
+    return standalone
 
 
 def export_public_report(state_path: str | Path, news_db_path: str | Path, export_dir: str | Path,
-                         *, now: datetime | None = None, max_items_per_source: int = 100) -> Path:
+                         *, now: datetime | None = None, max_items_per_source: int | None = None) -> Path:
     """Produce a single Lain index.html from explicitly projected saved state."""
     from tracker_core.reporter_html import LainReporter
 
@@ -448,6 +582,8 @@ def export_public_report(state_path: str | Path, news_db_path: str | Path, expor
     except TemplateError:
         raise ValueError('public template unavailable') from None
     html = _standalone_html(rendered)
+    if len(html.encode('utf-8')) > MAX_PUBLIC_HTML_BYTES:
+        raise ValueError('public HTML exceeds maximum size')
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "index.html"
     temporary = None

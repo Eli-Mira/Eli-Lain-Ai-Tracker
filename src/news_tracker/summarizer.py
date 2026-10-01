@@ -55,20 +55,24 @@ class Summarizer:
             # Call summarization API
             summary = await self._call_llm(prompt)
             
-            # Parse and assign summaries
+            # Validate the complete batch before mutating any observed item.
+            # Raw lines, partial arrays and wrong types are not summaries.
             try:
                 summaries = json.loads(summary)
-                for j, item_summary in enumerate(summaries):
-                    if j < len(batch):
-                        batch[j].summary = item_summary.get("summary", "")
-                        batch[j].dedup_key = item_summary.get("dedup_key", "")
-            except json.JSONDecodeError:
-                # Fallback: use raw summary
-                lines = summary.strip().split("\n")
-                for j, line in enumerate(lines[:len(batch)]):
-                    if j < len(batch):
-                        batch[j].summary = line.strip()
-            
+                if not isinstance(summaries, list) or len(summaries) != len(batch):
+                    raise ValueError("invalid batch")
+                for row in summaries:
+                    if not isinstance(row, dict) or any(
+                        not isinstance(row.get(key), str) or not row[key].strip()
+                        for key in ("summary", "dedup_key")
+                    ):
+                        raise ValueError("invalid summary")
+            except (ValueError, TypeError):
+                raise RuntimeError("AI summarization response invalid") from None
+            for item, row in zip(batch, summaries):
+                item.summary = row["summary"].strip()
+                item.dedup_key = row["dedup_key"].strip()
+
             logger.info(f"Summarized items {i+1}-{min(i+batch_size, len(items))}/{len(items)}")
         
         return items
@@ -123,10 +127,16 @@ Only return valid JSON, no markdown formatting."""
                 response = await client.post(api_url, json=payload, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                if choice.get("finish_reason", "stop") != "stop" or choice["message"].get("refusal"):
+                    raise ValueError("incomplete response")
+                content = choice["message"]["content"]
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("invalid response content")
+                return content
         except Exception as e:
             logger.error("Summarization unavailable (%s); preserving observed news", type(e).__name__)
-            raise RuntimeError("AI summarization unavailable") from e
+            raise RuntimeError("AI summarization unavailable") from None
     
     def summarize_manually(self, items: list[NewsItem]) -> list[NewsItem]:
         """Fallback: generate simple summaries without LLM."""
@@ -158,7 +168,7 @@ async def summarize_news(
     try:
         items = await summarizer.summarize_items(items)
     except Exception as e:
-        logger.warning(f"LLM summarization failed, using manual: {e}")
+        logger.warning("LLM summarization failed (%s); using observed excerpts", type(e).__name__)
         items = summarizer.summarize_manually(items)
     
     return items

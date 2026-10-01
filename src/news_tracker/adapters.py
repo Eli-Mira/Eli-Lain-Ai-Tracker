@@ -134,16 +134,37 @@ class BaseNewsAdapter(ABC):
             async with semaphore:
                 started.add(key)
                 retry_after = None
+                async def validated_operation():
+                    raw_items = await operation()
+                    if not isinstance(raw_items, list):
+                        raise _FeedFailure("invalid_items")
+                    valid = []
+                    rejected = 0
+                    for raw in raw_items:
+                        try:
+                            self.parse_item(raw)
+                        except Exception as exc:
+                            rejected += 1
+                            logger.warning("Failed to parse item from %s: %s", self.name, type(exc).__name__)
+                        else:
+                            valid.append(raw)
+                    if rejected and not valid:
+                        raise _FeedFailure("invalid_items")
+                    return valid, rejected
                 try:
-                    items = await asyncio.wait_for(operation(), self.feed_timeout_seconds)
+                    items, rejected = await asyncio.wait_for(validated_operation(), self.feed_timeout_seconds)
                 except asyncio.TimeoutError:
                     error = "timeout"
                 except Exception as exc:
                     error = str(exc) if isinstance(exc, _FeedFailure) else type(exc).__name__
                     retry_after = exc.retry_after_seconds if isinstance(exc, _FeedFailure) else None
                 else:
-                    self.feed_health.record_success(key, len(items))
-                    self.feed_results[key] = {"status": "healthy", "items": len(items)}
+                    if rejected:
+                        self.feed_health.record_failure(key, "invalid_items")
+                        self.feed_results[key] = {"status": "partial", "items": len(items), "parse_failures": rejected, "error": "invalid_items"}
+                    else:
+                        self.feed_health.record_success(key, len(items))
+                        self.feed_results[key] = {"status": "healthy", "items": len(items)}
                     return items
                 self.feed_health.record_failure(key, error, retry_after_seconds=retry_after)
                 self.feed_results[key] = {"status": "failed", "items": 0, "error": error}
@@ -176,9 +197,9 @@ class BaseNewsAdapter(ABC):
                 # and its failure detail may contain private paths.
                 logger.warning("Feed health persistence failed; collected results retained")
 
-    async def _checked_fetch(self, url: str, **kwargs) -> FetchResult:
+    async def _checked_fetch(self, url: str, *, allow_statuses: tuple[int, ...] = (), **kwargs) -> FetchResult:
         result = await self.fetcher.fetch(url, **kwargs)
-        if not result.success or result.status_code != 200:
+        if result.status_code not in allow_statuses and (not result.success or result.status_code != 200):
             retry_after = None
             if result.status_code == 429:
                 value = result.headers.get("retry-after", result.headers.get("Retry-After", "300"))
@@ -235,18 +256,17 @@ class GitHubAdapter(BaseNewsAdapter):
             data = json.loads(result.content)
             return [{
                 "source": "github", "title": f"{repo.get('full_name', '')} — {repo.get('description') or 'No description'}",
-                "url": repo.get("html_url", ""), "published_date": repo.get("updated_at"),
+                # Repository updated_at is not a publication/release timestamp.
+                "url": repo.get("html_url", ""), "published_date": None,
                 "body": (repo.get("description") or "")[:300], "raw": repo,
             } for repo in data["items"][:15]]
 
         async def fetch_release(repo_name):
             url = f"https://api.github.com/repos/{repo_name}/releases/latest"
-            result = await self.fetcher.fetch(url, headers=self._headers)
+            result = await self._checked_fetch(url, headers=self._headers, allow_statuses=(404,))
             # GitHub's documented 404 means no latest release, not a broken feed.
             if result.status_code == 404:
                 return []
-            if not result.success or result.status_code != 200:
-                raise _FeedFailure(f"http_{result.status_code}" if result.status_code else "transport_failure")
             release = json.loads(result.content)
             return [{
                 "source": "github", "title": release.get("name") or release.get("tag_name", repo_name),
@@ -285,6 +305,7 @@ class GitHubAdapter(BaseNewsAdapter):
             url=raw.get("url", ""),
             published_date=datetime.fromisoformat(raw["published_date"].replace("Z", "+00:00")) if raw.get("published_date") else None,
             category=category,
+            summary=(raw.get("body") or "")[:300] or None,
             raw_data={"source": "github", "item": raw}
         )
     
@@ -321,12 +342,16 @@ class RedditAdapter(BaseNewsAdapter):
         self._use_praw = False
         self._praw_instance = None
         self._praw_factory = None
+        self._configuration_error = None
 
         client_id = (config or {}).get("reddit_client_id")
         client_secret = (config or {}).get("reddit_client_secret")
         user_agent = (config or {}).get("reddit_user_agent", "ai-tech-news-tracker/1.0")
 
-        if client_id and client_secret:
+        if client_id is not None or client_secret is not None:
+            if not all(isinstance(value, str) and value.strip() for value in (client_id, client_secret)):
+                self._configuration_error = "reddit_configuration_invalid"
+                return
             try:
                 import praw
                 self._praw_factory = lambda: praw.Reddit(
@@ -341,8 +366,9 @@ class RedditAdapter(BaseNewsAdapter):
                 self._use_praw = True
                 logger.info("Reddit adapter using PRAW (authenticated)")
             except ImportError:
-                logger.warning("praw not installed, falling back to RSS")
-                self._use_praw = False
+                self._configuration_error = "reddit_client_unavailable"
+            except Exception:
+                self._configuration_error = "reddit_configuration_invalid"
         else:
             logger.info("Reddit adapter using RSS (anonymous, rate-limited)")
 
@@ -350,6 +376,11 @@ class RedditAdapter(BaseNewsAdapter):
         """Fetch posts from tracked subreddits."""
         items = []
 
+        if self._configuration_error:
+            self.feed_results = {}
+            async def unavailable():
+                raise _FeedFailure(self._configuration_error)
+            return await self._collect_feeds([(f"praw:r/{subreddit}", unavailable) for subreddit in self.SUBREDDITS])
         if self._use_praw and self._praw_instance:
             items = await self._fetch_praw()
         else:
@@ -403,7 +434,9 @@ class RedditAdapter(BaseNewsAdapter):
         """Parse raw Reddit item into NewsItem."""
         # Convert published date
         pub_date = None
-        if raw.get("published_date"):
+        if isinstance(raw.get("published_date"), datetime):
+            pub_date = raw["published_date"]
+        elif raw.get("published_date"):
             try:
                 pub_date = datetime(*raw["published_date"][:6], tzinfo=timezone.utc)
             except (ValueError, TypeError):
@@ -415,6 +448,7 @@ class RedditAdapter(BaseNewsAdapter):
             url=raw.get("url", ""),
             published_date=pub_date,
             category=self._classify_category(raw.get("title", ""), raw.get("body", "")),
+            summary=(raw.get("body") or "")[:300] or None,
             raw_data={"source": "reddit", "subreddit": raw.get("subreddit")}
         )
     
@@ -446,7 +480,8 @@ class HackerNewsAdapter(BaseNewsAdapter):
         self.feed_results = {}
 
         async def fetch_keyword(keyword):
-            url = f"https://hn.algolia.com/api/v1/search?query={quote(keyword)}&tags=story&hitsPerPage=10"
+            # Algolia documents search_by_date as newest-first; search is relevance-ranked.
+            url = f"https://hn.algolia.com/api/v1/search_by_date?query={quote(keyword)}&tags=story&hitsPerPage=10"
             result = await self._checked_fetch(url)
             data = json.loads(result.content)
             return [{

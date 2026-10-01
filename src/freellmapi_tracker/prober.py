@@ -83,6 +83,7 @@ class AutoProber:
         timeout: float = 15.0,
         transport: httpx.AsyncBaseTransport | None = None,
         model_catalog: dict[str, list[str]] | None = None,
+        bound_model_routes: dict[str, list[str]] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         # Unified client credential only; never fall back to a bundled secret.
@@ -90,6 +91,9 @@ class AutoProber:
         self.timeout = timeout
         self.transport = transport
         self.model_catalog = model_catalog or {}
+        # Exact DB-derived member IDs, not generic HTTP owned_by or group slugs.
+        # Supply only after confirming the local router supports member pinning.
+        self.bound_model_routes = bound_model_routes
     
     async def probe_provider(
         self,
@@ -136,16 +140,38 @@ class AutoProber:
                 error_type=category, response_category=category,
                 error_message="Router catalog unavailable; provider not verified",
                 evidence=[{"phase": "catalog", "http_status": status, "category": category}])
-        available = [row["id"] for row in catalog if row.get("owned_by") == provider.platform
-                     or provider.platform in row.get("platforms", [])]
-        listed = {row["id"] for row in catalog}  # Gateway health/cooldown flags are not inference proof.
-        for candidate in self.model_catalog.get(provider.platform, []):
-            if candidate in listed and candidate not in available:
-                available.append(candidate)
-        candidates = []
-        for candidate in (model, provider.probe_model, *available):
-            if candidate and self.api_key not in candidate and candidate in available and candidate not in candidates:
-                candidates.append(candidate)
+        if self.bound_model_routes is not None:
+            # The router lists group slugs but also accepts exact member pins.
+            # An explicitly supplied (even empty) binding map is authoritative:
+            # never widen it to a shared group or a different upstream's models.
+            prefix = provider.platform + ":"
+            available = [candidate for candidate in self.bound_model_routes.get(provider.platform, [])
+                         if isinstance(candidate, str) and candidate.startswith(prefix)
+                         and candidate[len(prefix):].strip()
+                         and (provider.platform != "custom" or (
+                             "#" in candidate[len(prefix):]
+                             and all(part.strip() for part in candidate[len(prefix):].rsplit("#", 1))))]
+            candidates = []
+            for preferred in (model, provider.probe_model):
+                if preferred:
+                    for candidate in available:
+                        upstream = candidate[len(prefix):].split("#", 1)[0]
+                        if preferred in (candidate, upstream) and self.api_key not in candidate and candidate not in candidates:
+                            candidates.append(candidate)
+            for candidate in available:
+                if self.api_key not in candidate and candidate not in candidates:
+                    candidates.append(candidate)
+        else:
+            available = [row["id"] for row in catalog if row.get("owned_by") == provider.platform
+                         or provider.platform in row.get("platforms", [])]
+            listed = {row["id"] for row in catalog}  # Gateway flags are not inference proof.
+            for candidate in self.model_catalog.get(provider.platform, []):
+                if candidate in listed and candidate not in available:
+                    available.append(candidate)
+            candidates = []
+            for candidate in (model, provider.probe_model, *available):
+                if candidate and self.api_key not in candidate and candidate in available and candidate not in candidates:
+                    candidates.append(candidate)
         if not candidates:
             return ProviderProbeResult(provider.platform, False, "none", error_type="config",
                                        error_message="No provider models in router catalog",
@@ -197,17 +223,23 @@ class AutoProber:
                 # Success
                 if response.status_code == 200:
                     routed = response.headers.get("x-routed-via", "")
+                    expected_model = test_model
+                    prefix = platform + ":"
+                    if self.bound_model_routes is not None and test_model.startswith(prefix):
+                        expected_model = test_model[len(prefix):].split("#", 1)[0]
                     category = ""
                     if not routed:
                         category = "route_unverified"
-                    elif routed.split("/", 1)[0] != platform:
+                    elif routed != f"{platform}/{expected_model}":
                         category = "route_mismatch"
                     elif response.headers.get("x-freellm-cache", "").lower() == "hit":
                         category = "cached_response"
                     else:
                         try:
                             choices = response.json().get("choices")
-                            if not isinstance(choices, list) or not choices or not isinstance(choices[0].get("message"), dict):
+                            message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+                            content = message.get("content") if isinstance(message, dict) else None
+                            if not isinstance(content, str) or not content.strip():
                                 category = "invalid_response"
                         except (ValueError, AttributeError, TypeError):
                             category = "invalid_response"

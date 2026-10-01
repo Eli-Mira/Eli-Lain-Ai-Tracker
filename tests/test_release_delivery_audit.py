@@ -199,7 +199,7 @@ def test_release_workflow_restores_per_feed_health_state():
     import yaml
     workflow = yaml.safe_load((ROOT / ".github/workflows/news-tracker-daily.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"]["run-elilain-audit"]["steps"]
-    cache = next(s for s in steps if s.get("uses", "").startswith("actions/cache@"))
+    cache = next(s for s in steps if s.get("uses", "").startswith(("actions/cache@", "actions/cache/restore@")))
     cached = cache["with"]["path"].splitlines()
     for required in ("data/feed_health.json", "data/health.json", "data/intel_state.json",
                      "data/provider_state.json", "data/provider_changes.json",

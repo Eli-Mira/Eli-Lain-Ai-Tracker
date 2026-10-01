@@ -67,12 +67,14 @@ async def test_optional_feed_state_write_failure_cannot_discard_success(tmp_path
     from news_tracker.adapters import RSSFeedAdapter
     adapter = RSSFeedAdapter({'feeds': []})
     async def success():
-        return [{'title': 'Observed item'}]
+        # A row that cannot become a NewsItem (no http(s) url) is rejected by
+        # per-row validation before persistence, so use a complete observed row.
+        return [{'title': 'Observed item', 'url': 'https://example.org/observed-item'}]
     def unavailable_state():
         raise OSError('private-path-and-token-must-not-be-logged')
     monkeypatch.setattr(adapter.feed_health, 'save_state', unavailable_state)
     rows = await adapter._collect_feeds([('https://example.org/rss', success)])
-    assert rows == [{'title': 'Observed item'}]
+    assert rows == [{'title': 'Observed item', 'url': 'https://example.org/observed-item'}]
     assert 'private-path-and-token' not in caplog.text
     assert 'persistence' in caplog.text.lower()
 

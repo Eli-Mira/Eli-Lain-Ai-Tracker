@@ -42,11 +42,11 @@ This checklist supersedes the old IMPLEMENTATION_TODO.md checked boxes and histo
 - [ ] JSON/SQLite: corruption, atomic write failure, retained history, cache transport, derived-data replay and no false freshness.
 - [ ] Original attachment vs selected template vs rendered internal/public/hosted HTML: structural and visual fidelity.
 - [ ] Chromium: desktop/mobile, offline, no JavaScript, all controls/search/filters/links, counts, empty states, errors and overflow.
-- [ ] Telegram: exact HTML attachment protocol, truthful receipt/readback limits, real target verification.
-- [ ] Discord: exact HTML attachment protocol and independent target readback.
-- [ ] Netlify: publish only the sanitized standalone file; exact hosted byte hash verified; no private state tree.
-- [ ] Workflow: restores all required state, fails on missing report or delivery failure; no duplicate/replayed notices.
-- [ ] Security/dependencies/failure paths: actionable vulnerability evidence, full suite, clean-state suite and actual CI.
+- [x] Telegram: exact HTML attachment protocol, truthful receipt/readback limits, real target verification.
+- [x] Discord: exact HTML attachment protocol and independent target readback.
+- [x] Netlify: publish only the sanitized standalone file; exact hosted byte hash verified; no private state tree.
+- [ ] Workflow: eight state files restored; failed-job receipt preservation now locally tested, fresh hosted CI verification still owed. Exact-byte dedupe is not no-material-change dedupe.
+- [ ] Security/dependencies/failure paths: prior 561-test/hosted CI gate passed; latest fixes, dependency evidence and clean-state release verification still owed.
 - [ ] Consolidated release verdict with blocking findings, commands, timestamped evidence and delivery artifacts.
 
 ## Evidence files (five independent workstreams)
@@ -66,9 +66,36 @@ Entries are pending until the parent verifies worker findings and resulting inte
 - Actual local saved-state internal report: `C:/Users/emadg/AppData/Local/hermes/cache/scratch/eli-lain-release/active-project-saved-state.html`, 1,772 saved inventory entries, three active groups. This is regeneration, not a fresh source observation.
 - GitHub CLI currently unauthenticated; delivery audit is checking the existing git helper as an authorized read-only alternative without exposing credentials.
 
+## Parent verification of worker claims (2026-10-01, after the batch returned)
+- Full suite re-run independently: **553 passed, 9 xfailed** at that moment. Worker counts were not trusted; every claim below was re-measured.
+- **Corrected my own false template alarm.** The template worker stated the original locked style block was "byte-identical (`347adbd0…`)". My first check appeared to confirm a mismatch, but the fault was my own regex: `<style>` appears as literal text inside the template's leading HTML comment, so `re.search(r'<style>')` matched the comment, not the real style element. With the genuine element extracted, the original CSS is **112 canonical rules, identical, and an exact prefix** of the active style block (both canonicalize to `a12ee659dbb9fc5e`). The attachment itself is unchanged at `c6d506229ba422a1`. Claim upheld after correction.
+- Actual public export regenerated from saved state: **659,604 bytes**, SHA-256 `d19287da1fa264b9864e40a3df277446b223113d1faac13168e8fb6efac8f203`, directory contains only `index.html`, project groups are exactly `data-ai, gesture-control, hearth-pos`, and `fruit-slicer` is absent.
+- `load_artifact()` accepts that real export: rendered-at `2026-10-01T05:40:28Z`, 5 saved observation timestamps, source counts github-trending 49, openrouter-models 100, openrouter-providers 100, skills-sh 100, unorouter-models 100.
+
+## Delivery defects: all nine reproduced, then fixed (parent-owned)
+Each was a strict `xfail` reproduction first; every one now passes with **zero xfails**.
+1. **HTML file was never sent** — both channels received text plus a hosted link only. Now the exact `index.html` bytes are attached to Telegram (`sendDocument`) and Discord (`files[0]` multipart); receipts verify filename and size, and Discord's independent readback must confirm the attachment.
+2. Oversized artifact was uploaded before any refusal → `artifact_too_large` preflight before deployment.
+3. `--no-export` trusted a footer string, so a remote `<script src>` passed → real standalone check across script/link/iframe/object/embed/img/source.
+4. **Real secret leak**: `notifier.py:78` logged the full Telegram URL including the bot token. Now logs the exception class only. Discord's error body had the same problem.
+5. `MultiNotifier` reported success when only some channels worked → partial delivery is now a failure.
+6. `Logger.disabled` does not propagate to child loggers, so `httpcore.http11` could still print the token → the whole httpx/httpcore/h11 tree is suppressed. My first attempt also detached handlers and broke 26 tests; simplified to prefix-matching disable plus level.
+7. Restored cache replayed yesterday's headline as breaking news → only genuinely new URLs may raise an alert.
+8. Workflow cache omitted `feed_health.json` and `project_evaluations.json`, silently resetting cooldowns and derived state every run → both added, plus `delivery_receipts.json`.
+9. No durable dedup → identical artifacts are no longer announced twice; changed ones still are.
+
+Historical post-fix full suite: **561 passed in 15.49s, no xfails**. Commit `dae3eba` pushed; manual CI run `36820991710` completed successfully with exact hosted SHA256 `271ccfc9cb5ee73eb6caeae3ccaefee7f67cc52c177c26723954f446762c2d06`, Telegram document receipt and Discord attachment readback. Later continuity tests revealed additional gaps; this historical green run does not close them.
+
+## Follow-up verification — 2026-10-01
+- Four disjoint workers in `deleg_ccc1157f`: useful bounded Skills.sh detail selection; public source coverage/lifecycle/price projection; exact local provider/router bindings; news freshness and strict summary response validation. Work remains pending parent verification; these are not completed claims.
+- Parent RED→GREEN: partial fan-out preserves confirmed sibling across restart; changed destination cannot borrow an old confirmation; four corrupt receipt states fail before any external write; CI uses explicit restore/save so failed publish does not discard confirmed receipts.
+- Parent scoped command: `NOTIFICATION_CHANNEL=none .venv/Scripts/python.exe -m pytest tests/test_release_delivery_continuity.py tests/test_report_delivery.py tests/test_release_delivery_audit.py tests/test_intel_workflow.py -q --basetemp='C:/Users/emadg/AppData/Local/hermes/cache/scratch/receipt-green-4'` → **51 passed in 1.73s**, exit0. `git diff --check` on parent-owned code/workflow/tests exit0.
+- Full release evidence and unresolved exactly-once/material-change/concurrent-publisher limits: `docs/release-delivery-continuity-followup.md`. Latest changes are local/uncommitted, not live-deployed. No previous blocked artifact download was retried.
+
 ## Open issues already evidenced
-- The public exporter currently strips fetched descriptions into fixed generic listing disclaimers; usefulness of typed public metadata is under audit. Do not solve this by exposing raw private evidence.
-- Derived project evaluation was a one-off saved artifact, not regenerated by the actual report command. Fixed locally, not published yet.
-- Existing historical tests/documents treated fruit-slicer as active and overstated completion. Correct current scope instead of relying on those old check marks.
+- Complete validated public inventory, useful typed metadata and source coverage are under follow-up. Preserve the raw-text/private-evidence exclusion; do not use generic disclaimers as a substitute for safe typed intelligence.
+- Skills.sh public API authentication remains a separate boundary from useful public HTML; no full-catalog coverage claim.
+- Provider free-cost/routing proof, old news observations versus publication time, and strict summarizer contracts require factual evidence.
+- Original scope/evaluation-persistence defects were fixed in `dae3eba`; do not repeat historical false pending/active-fruit claims.
 
 No claim of zero bugs or release readiness until all blocking gates are closed with evidence.

@@ -180,29 +180,66 @@ def _attachment_verified(message: dict, artifact: ReportArtifact) -> bool:
 
 
 def load_receipts(state_path: str | Path | None) -> dict[str, dict[str, str]]:
-    """Read the durable per-artifact delivery record; absence is not an error."""
+    """Missing state is a baseline; corrupt state must not trigger repeat sends."""
     if state_path is None:
         return {}
     path = Path(state_path)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        with path.open("rb") as handle:
+            raw = handle.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError
+        value = json.loads(raw)
+        if not isinstance(value, dict) or not isinstance(value.get("artifacts"), dict):
+            raise ValueError
+        artifacts = value["artifacts"]
+        for digest, record in artifacts.items():
+            if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ValueError
+            if not isinstance(record, dict) or any(not isinstance(item, str) for item in record.values()):
+                raise ValueError
+            for channel, pattern in (("telegram", r"[1-9]\d*/[1-9]\d*"),
+                                     ("discord", r"[1-9]\d{16,19}")):
+                identifier = record.get(channel, "")
+                binding = record.get(channel + "_destination", "")
+                if identifier and not re.fullmatch(pattern, identifier):
+                    raise ValueError
+                if binding and not re.fullmatch(r"[a-f0-9]{64}", binding):
+                    raise ValueError
+        return artifacts
+    except FileNotFoundError:
         return {}
-    return value.get("artifacts", {}) if isinstance(value, dict) else {}
+    except (ValueError, UnicodeError):
+        raise DeliveryError("invalid_receipt_state") from None
+    except OSError:
+        raise DeliveryError("receipt_state_unreadable") from None
+
+
+def _destination_bindings(config: DeliveryConfig) -> dict[str, str]:
+    """Bind receipts to the actual site/account/target without persisting them."""
+    destinations = {
+        "telegram": (config.site_id, config.telegram_token, config.telegram_chat_id),
+        "discord": (config.site_id, config.discord_token, config.discord_channel_id),
+    }
+    return {channel: hashlib.sha256(json.dumps(values).encode("utf-8")).hexdigest()
+            for channel, values in destinations.items()}
 
 
 def save_receipts(state_path: str | Path | None, artifact: ReportArtifact,
-                  receipts: DeliveryResult) -> None:
+                  receipts: DeliveryResult, config: DeliveryConfig) -> None:
     """Record the delivery so an identical artifact is not announced twice."""
     if state_path is None:
         return
     path = Path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = load_receipts(state_path)
+    bindings = _destination_bindings(config)
     artifacts[artifact.sha256] = {
         "url": receipts.hosted.url,
-        "telegram": receipts.telegram.message_id or "",
-        "discord": receipts.discord.message_id or "",
+        "telegram": (receipts.telegram.message_id or "") if receipts.telegram.confirmed else "",
+        "discord": (receipts.discord.message_id or "") if receipts.discord.confirmed else "",
+        "telegram_destination": bindings["telegram"],
+        "discord_destination": bindings["discord"],
     }
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps({"artifacts": artifacts}, sort_keys=True), encoding="utf-8")
@@ -479,6 +516,8 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
     """
     config = DeliveryConfig.from_env(environ)
     artifact = load_artifact(export_dir)
+    # Validate restored receipt state before the first external side effect.
+    restored_receipts = load_receipts(state_path)
     pinned = _PinnedTransport(resolver, transport)
     try:
         with _quiet_http_logs(), httpx.Client(transport=pinned, timeout=20.0, trust_env=False,
@@ -486,17 +525,20 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
             session = _Session(config, pinned, client)
             hosted = session.host(artifact, poll_attempts, poll_interval, sleep)
             brief = build_brief(artifact, hosted)
-            already = load_receipts(state_path).get(artifact.sha256)
-            if already and already.get("telegram") and already.get("discord"):
-                return DeliveryResult(
-                    hosted, brief,
-                    ChannelReceipt("telegram", already["telegram"], "previously-confirmed"),
-                    ChannelReceipt("discord", already["discord"], "previously-confirmed"))
-            result = DeliveryResult(hosted, brief, session.telegram(brief, artifact),
-                                     session.discord(brief, artifact))
+            already = restored_receipts.get(artifact.sha256) or {}
+            bindings = _destination_bindings(config)
+            telegram = (ChannelReceipt("telegram", already["telegram"], "previously-confirmed")
+                        if already.get("telegram") and already.get("telegram_destination") == bindings["telegram"]
+                        else session.telegram(brief, artifact))
+            discord = (ChannelReceipt("discord", already["discord"], "previously-confirmed")
+                       if already.get("discord") and already.get("discord_destination") == bindings["discord"]
+                       else session.discord(brief, artifact))
+            result = DeliveryResult(hosted, brief, telegram, discord)
+            # Persist confirmed channels even when their sibling fails. A later
+            # explicit rerun must not repeat a previously confirmed upload.
+            save_receipts(state_path, artifact, result, config)
             if not result.success:
                 raise DeliveryError("channel_failure", result=result)
-            save_receipts(state_path, artifact, result)
             return result
     except DeliveryError:
         raise
