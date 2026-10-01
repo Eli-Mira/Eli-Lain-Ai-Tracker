@@ -408,8 +408,13 @@ class NewsTracker:
         include_providers: bool = True,
         include_news: bool = True,
         include_tools: bool = True,
+        news_limit: int = 1000,
     ) -> str:
-        """Generate HTML report with providers, news, and tools."""
+        """Generate HTML report with providers, news, and tools.
+
+        `news_limit` is a caller-supplied safety ceiling, not a silent default:
+        anything it excludes is disclosed in the news section heading.
+        """
         run_date = date or self.last_run_date or datetime.now(timezone.utc)
 
         # Provider section
@@ -419,8 +424,14 @@ class NewsTracker:
 
         # News + tools section
         news_items: list[dict[str, Any]] = []
+        news_saved_total = 0
         if include_news:
-            items_raw = self.sqlite.get_items(days=1)
+            # get_items defaults to limit=100. A day that saved more than that
+            # used to render exactly 100 and claim "100 stories", which is
+            # indistinguishable from a genuinely quiet day. Ask for everything
+            # observed in the window and disclose the retained total instead.
+            items_raw = self.sqlite.get_items(days=1, limit=news_limit)
+            news_saved_total = self.sqlite.count_items(days=1)
             for item in items_raw:
                 news_items.append({
                     "headline": item.get("title", ""),
@@ -488,6 +499,7 @@ class NewsTracker:
         html = self.reporter.render(
             api_items=api_items,
             news_items=news_items,
+            news_saved_total=news_saved_total,
             report_date=run_date.strftime("%Y-%m-%d"),
             generated_at=datetime.now(timezone.utc).strftime("%H:%M UTC"),
             persona_image_url=None,

@@ -246,7 +246,11 @@
     {% if public_export %}
     <p class="meta">News excluded from this public export — not assessed.</p>
     {% else %}
+    {% if news_saved_total is not none and news_saved_total > (news_items|length) %}
+    <p class="meta">{{ news_items|length }} of {{ news_saved_total }} stories retained</p>
+    {% else %}
     <p class="meta">{{ news_items|length }} stories</p>
+    {% endif %}
     <ul class="items">
       {% for item in news_items %}
       <li class="item">

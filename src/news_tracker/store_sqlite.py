@@ -195,6 +195,21 @@ class SQLiteStore:
         rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def count_items(self, days: int = 7) -> int:
+        """Total items retained in the window, independent of any list limit.
+
+        Lets a report disclose what a list cap would otherwise hide.
+        """
+        conn = self._get_conn()
+        if days:
+            cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM news_items WHERE julianday(fetched_date) BETWEEN julianday(?, 'unixepoch') AND julianday('now')",
+                (cutoff,)).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM news_items").fetchone()
+        return int(row[0])
+
     def get_weekly_summary(self, weeks: int = 1) -> dict[str, Any]:
         """Get most-covered topics for the past N weeks."""
         conn = self._get_conn()
