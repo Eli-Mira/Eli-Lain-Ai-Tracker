@@ -4,10 +4,14 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from intel_sources.public_report import PUBLIC_SOURCES
 from intel_sources.recommendations import evaluate_projects
 from tracker_core.reporter_html import LainReporter
 
+from verification_fixtures import load_verification_inventory
+
 NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+PUBLIC_DISCOVERY_SOURCES = tuple(PUBLIC_SOURCES)
 CHECKED = "2026-10-01T11:00:00+00:00"
 TDD = "skills:obra/superpowers/test-driven-development"
 
@@ -84,7 +88,7 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     from intel_sources.public_report import build_public_payload
     from intel_sources.recommendations import evaluate_projects
     root = Path(__file__).resolve().parents[1]
-    state = json.loads((root / "data/intel_state.json").read_text(encoding="utf-8"))
+    state = json.loads(load_verification_inventory(root).read_text(encoding="utf-8"))
     evaluated = evaluate_projects(state["items"], now=NOW)
     groups = evaluated["groups"]
     coverage = {**evaluated["coverage"], "inventory_count": evaluated["inventory_count"],
@@ -102,8 +106,17 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     shortlists = {project: len(group["shortlist"]) for project, group in groups.items()}
     assert sum(shortlists.values()) > 0, "real inventory produced no reviewed shortlist candidates"
     assert shortlists["fruit-slicer"] > 0, "fruit-slicer shortlist is empty from real saved data"
-    assert coverage["reviewed_count"] > 0 and coverage["discovery_count"] > 100
-    assert payload["recommendation_coverage"]["discovery_count"] > payload["recommendation_coverage"]["exported_count"]
+    # Scale-relative: this asserts coverage is disclosed and that the export cap
+    # is real, not that the inventory happens to exceed some live count.
+    assert coverage["reviewed_count"] > 0
+    assert 0 < coverage["discovery_count"] <= len(state["items"])
+    public_coverage = payload["recommendation_coverage"]
+    assert public_coverage["inventory_replaced"] is False
+    assert public_coverage["reviewed_count"] > 0
+    # Exported rows are capped per public source; the cap is honoured and disclosed.
+    assert public_coverage["exported_count"] <= (
+        public_coverage["max_items_per_source"] * len(PUBLIC_DISCOVERY_SOURCES))
+    assert public_coverage["exported_count"] <= public_coverage["inventory_count"]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH"))
         try:

@@ -102,7 +102,9 @@ def test_export_public_cli_writes_only_sanitized_index(tmp_path, monkeypatch, ca
     tracker = tracker_at(tmp_path)
     _seed_discoveries(tracker)
     monkeypatch.setattr(main, 'NewsTracker', lambda **kw: tracker)
-    monkeypatch.setattr(sys, 'argv', ['main.py', 'export-public', '--public-dir', str(tmp_path / 'public')])
+    # tracker_at() puts saved state under <tmp>/data, so the CLI must read there.
+    monkeypatch.setattr(sys, 'argv', ['main.py', 'export-public', '--data-dir', str(tmp_path / 'data'),
+                                   '--public-dir', str(tmp_path / 'public')])
     assert main.main() == 0
     payload = json.loads(capsys.readouterr().out.strip())
     assert Path(payload['artifact']).name == 'index.html'
@@ -117,7 +119,8 @@ def test_publish_cli_fails_closed_without_delivery_config(tmp_path, monkeypatch,
     tracker = tracker_at(tmp_path)
     _seed_discoveries(tracker)
     monkeypatch.setattr(main, 'NewsTracker', lambda **kw: tracker)
-    monkeypatch.setattr(sys, 'argv', ['main.py', 'publish', '--public-dir', str(tmp_path / 'public')])
+    monkeypatch.setattr(sys, 'argv', ['main.py', 'publish', '--data-dir', str(tmp_path / 'data'),
+                                   '--public-dir', str(tmp_path / 'public')])
     for name in ('NETLIFY_AUTH_TOKEN', 'NETLIFY_SITE_ID', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
                  'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_ID'):
         monkeypatch.delenv(name, raising=False)
