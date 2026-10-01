@@ -127,4 +127,7 @@ def test_publish_cli_fails_closed_without_delivery_config(tmp_path, monkeypatch,
     assert main.main() == 1
     output = capsys.readouterr()
     assert 'missing_config' in (output.out + output.err)
-    assert str(tmp_path) not in (output.out + output.err)
+    # The export step legitimately reports its own artifact path on stdout; the
+    # delivery failure must not echo paths or tokens on the failure channel.
+    assert 'missing_config' in output.err
+    assert str(tmp_path) not in output.err
