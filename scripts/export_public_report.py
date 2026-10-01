@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", type=Path, default=ROOT / "data/intel_state.json")
     parser.add_argument("--news-db", type=Path, default=ROOT / "data/news.db")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "public")
-    parser.add_argument("--max-items-per-source", type=int, default=100)
+    parser.add_argument("--max-items-per-source", type=int, default=None)
     args = parser.parse_args(argv)
     try:
         artifact = export_public_report(args.state, args.news_db, args.output_dir,

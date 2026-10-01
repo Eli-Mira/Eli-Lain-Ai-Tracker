@@ -17,6 +17,7 @@ import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 # Add paths
 sys.path.insert(0, str(Path(__file__).parent / "src" / "tracker-core"))
@@ -154,7 +155,7 @@ class NewsTracker:
         prober = AutoProber(
             base_url=self.freellmapi_url,
             api_key=os.getenv("FREELLMAPI_API_KEY"),
-            model_catalog=self.provider_tracker.load_probe_catalog(),
+            bound_model_routes=self.provider_tracker.load_probe_catalog(qualified=True),
         )
         previous = [p.to_dict() for p in self.provider_tracker.providers.values()]
         providers = [p for p in self.provider_tracker.providers.values() if p.probe_enabled and p.status != ProviderStatus.DISABLED]
@@ -626,8 +627,34 @@ def main(argv: list[str] | None = None) -> int:
                         help="Directory holding the sanitized public index.html export")
     parser.add_argument("--no-export", action="store_true",
                         help="Skip rebuilding the sanitized export before publishing")
+    parser.add_argument("--enable-ai-summary", action="store_true",
+                        help="Explicitly enable configured AI summaries; may send observed news to an API")
 
     args = parser.parse_args(argv)
+    summarizer_config = ({"api_key": os.getenv("SUMMARIZER_API_KEY"),
+                          "model": os.getenv("SUMMARIZER_MODEL"),
+                          "base_url": os.getenv("SUMMARIZER_API_URL")}
+                         if args.enable_ai_summary else None)
+
+    if summarizer_config is not None and any(
+        not value or not value.strip() for value in summarizer_config.values()
+    ):
+        parser.error("AI summaries require SUMMARIZER_API_KEY, SUMMARIZER_MODEL and SUMMARIZER_API_URL")
+
+    if summarizer_config is not None:
+        endpoint = summarizer_config["base_url"]
+        try:
+            parsed = urlsplit(endpoint)
+            safe_scheme = parsed.scheme == "https" or (
+                parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            )
+            if (not safe_scheme or not parsed.hostname or parsed.username is not None
+                    or parsed.password is not None or parsed.query or parsed.fragment
+                    or any(char.isspace() or ord(char) < 32 for char in endpoint)
+                    or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
+                raise ValueError
+        except ValueError:
+            parser.error("SUMMARIZER_API_URL must be HTTPS (or loopback HTTP), without credentials, query or fragment")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
@@ -637,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         theme=args.theme,
         freellmapi_db_path=args.freellmapi_db,
         freellmapi_url=args.freellmapi_url,
+        summarizer_config=summarizer_config,
     )
 
     if args.action == "run":

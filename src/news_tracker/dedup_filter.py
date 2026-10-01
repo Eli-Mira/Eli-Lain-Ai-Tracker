@@ -29,45 +29,41 @@ class Deduplicator:
             return items
         
         unique = []
-        seen_titles = {}  # Normalize title -> best item
-        
+        seen_urls = {}  # URL -> retained item
+        seen_titles = {}  # Normalized title -> retained item
+
         for item in items:
-            # Normalize title for comparison
             norm_title = self._normalize_title(item.title)
-            
-            # Check for exact URL match
-            found = False
-            for existing in unique:
-                if existing.url == item.url:
-                    # Keep the one with more complete data
-                    if self._is_better(existing, item):
-                        unique.remove(existing)
-                        unique.append(item)
-                    found = True
-                    break
-            
-            if found:
-                continue
-            
-            # Check for similar titles
-            similar_key = None
-            for key, existing in seen_titles.items():
-                similarity = self._title_similarity(norm_title, key)
-                if similarity >= self.threshold:
-                    similar_key = key
-                    break
-            
-            if similar_key:
-                # Keep the better version
-                existing = seen_titles[similar_key]
-                if self._is_better(existing, item):
-                    unique.remove(existing)
-                    del seen_titles[similar_key]
-                else:
+
+            # Check for exact URL match.
+            existing = seen_urls.get(item.url)
+            if existing is not None:
+                if not self._is_better(existing, item):
                     continue
-            
-            # Add to unique list
+                unique.remove(existing)
+                del seen_urls[existing.url]
+                del seen_titles[self._normalize_title(existing.title)]
+
+            # Resolve every title collision before removing any title winner.
+            # A candidate can bridge two otherwise dissimilar retained titles.
+            similar_keys = [
+                key for key in seen_titles
+                if self._title_similarity(norm_title, key) >= self.threshold
+            ]
+            if any(
+                not self._is_better(seen_titles[key], item)
+                for key in similar_keys
+            ):
+                continue
+
+            for key in similar_keys:
+                existing = seen_titles[key]
+                unique.remove(existing)
+                del seen_urls[existing.url]
+                del seen_titles[key]
+
             unique.append(item)
+            seen_urls[item.url] = item
             seen_titles[norm_title] = item
         
         return unique

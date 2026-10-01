@@ -115,6 +115,19 @@ def _public_identity(row: dict[str, Any], source: str) -> tuple[str, str] | None
     return identifier, url
 
 
+def _public_detail_identity(identifier: str, value: Any, source: str) -> bool:
+    """Allow the approved Skills.sh detail host alias, never a listing alias."""
+    url = public_http_url(value)
+    if not url:
+        return False
+    parsed = urlsplit(url)
+    if source == 'skills-sh' and parsed.hostname == 'www.skills.sh':
+        # Validate the exact owner/repo/slug with the unchanged listing rules.
+        # This candidate is only for validation; keep the original listing link.
+        url = parsed._replace(netloc='skills.sh').geturl()
+    return _public_identity({'id': identifier, 'url': url}, source) is not None
+
+
 def _public_title(value: Any, identifier: str, source: str) -> str:
     # Titles are the only selected free text. Never use summaries, errors or raw evidence.
     if (isinstance(value, str) and 0 < len(value) <= 180
@@ -299,7 +312,7 @@ def _public_metadata(row: dict[str, Any], source: str, now: datetime) -> list[di
     if source in ('github-trending', 'skills-sh'):
         detail = evidence.get('metadata')
         if isinstance(detail, dict) and all(
-            _public_identity({'id': row['id'], 'url': detail[key]}, source) is not None
+            _public_detail_identity(row['id'], detail[key], source)
             for key in ('url', 'final_url') if key in detail):
             enum('Detail metadata status', detail.get('status'), frozenset({'ok', 'empty', 'error', 'not-scanned', 'not-attempted'}))
             observed = _timestamp(detail.get('checked_at'), now)

@@ -1,6 +1,14 @@
 # Customer release delivery audit
 
-## Verdict
+## Current status — supersedes the historical snapshot below
+
+**Release NOT approved.** The text-only implementation described below is historical, pinned to run `36810623236` / commit `0ce25843`. Subsequent verified hosted runs `36856918737` and `36860505208` attached exact `index.html` bytes to Telegram and Discord; Discord independently read back its attachment. See `release-hosted-artifact-verification.md` and the dated evidence in `RELEASE_ACCEPTANCE.md`.
+
+On October 1, the six-bug/Pages changes are locally staged and independently exercised: **792 tests pass**; a newly regenerated saved-state artifact passes publication preflight and **46 Chromium checks**. These edits have **not** been committed, pushed or deployed. Independent pre-commit review `deleg_1d830f47` and a fresh manual Pages/CI/attachment verification remain open; daily Pages gate was read back `false` at `2026-10-01T17:41:04Z`. Netlify is retained as the mirror. Full current evidence: `release-six-bugs-pages-integration.md`.
+
+Every implementation/remote-state statement below describes the historical audited commit, not the current implementation or newest hosted run.
+
+## Historical audit verdict
 
 **NOT customer-release accepted.** The most recent completed remote workflow successfully published a sanitized standalone HTML object and posted **text + a link** to both channels. It did **not** attach the HTML file to Telegram or Discord. Green CI here proves the implemented plumbing, not the requested file delivery, content usefulness, or end-user consumption.
 

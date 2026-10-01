@@ -11,7 +11,13 @@ on:
   schedule:
     # Fixed UTC schedule; report check timestamps are timezone-aware.
     - cron: '0 6 * * *'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      publish_pages:
+        description: 'Verify Pages publication once before enabling the daily flag'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   run-elilain-audit:
@@ -87,6 +93,10 @@ jobs:
         # Regenerated from saved state only: writes exactly one public/index.html.
         run: python main.py export-public --public-dir ./public
 
+      - name: Validate sanitized single-file publication boundary
+        # No network or credentials; fails before any public upload/deploy.
+        run: python scripts/verify_pages_report.py --public-dir ./public --preflight-only
+
       - name: Upload report as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -106,11 +116,32 @@ jobs:
       # `if`; GitHub rejects the whole workflow file when it is used there.
       # Secrets reach the process through env only, never argv, and no event
       # text is ever interpolated into a run block.
+      # Manual input is a trusted boolean used only in `if`, never in shell.
+      # Keep the daily flag off until a manual end-to-end verification succeeds.
+      - name: Deploy sanitized file to Cloudflare Pages
+        id: deploy-pages
+        if: ${{ vars.CLOUDFLARE_PUBLISH_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.publish_pages) }}
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.146.0'
+          command: pages deploy ./public --project-name=eli-lain-intel --branch=main
+          # No gitHubToken: deploys need no additional repository permissions.
+
+      - name: Verify actual Pages bytes before notifications
+        id: verify-pages
+        if: ${{ steps.deploy-pages.outcome == 'success' }}
+        run: python scripts/verify_pages_report.py --public-dir ./public
+
       - name: Publish export and notify (opt-in via PUBLISH_ENABLED)
         if: ${{ vars.PUBLISH_ENABLED == 'true' }}
         env:
           # Class-name-only failure diagnostics; never logs messages or URLs.
           DELIVERY_DEBUG: "1"
+          # Empty when Pages is skipped: preserve the legacy Netlify path.
+          # The publisher independently re-verifies Pages before channel sends.
+          PUBLIC_REPORT_URL: ${{ steps.verify-pages.outputs.url }}
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

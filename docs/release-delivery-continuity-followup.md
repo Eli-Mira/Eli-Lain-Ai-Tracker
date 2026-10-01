@@ -2,7 +2,9 @@
 
 ## Status
 
-**Local regression gate PASS; integrated release OPEN.** These changes are not yet committed/pushed or exercised by a new hosted CI run. Historical live attachment verification remains run `36820991710` at commit `dae3eba33a504c63894e858a6ea62a9f107a164d`; it does not verify these new continuity fixes.
+**Current status, October 1: local combined regression gate PASS; integrated release OPEN.** Subsequent hosted runs `36856918737` and `36860505208` verified exact HTML attachment delivery and integrated receipt/cache behavior; the earlier uncommitted-only statement is superseded for those fixes. The newly staged six-bug/Pages changes are separately uncommitted/unpublished: **792 parent tests pass**, preflight and **46 Chromium checks** pass on a real local saved-state export. Independent review and fresh Pages/CI/attachment proof remain pending, with daily Pages recurrence still OFF. See `release-six-bugs-pages-integration.md` and `release-hosted-artifact-verification.md` for the current local/historical hosted distinction.
+
+The dated commands and findings below are preserved as historical evidence. They do not assert that subsequent verified hosted fixes are still uncommitted.
 
 ## Independently reproduced defects and fixes
 

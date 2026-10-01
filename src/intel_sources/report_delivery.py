@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 import httpx
 
-from .public_report import PUBLIC_SOURCES
+from .public_report import PUBLIC_SOURCES, _standalone_html
 
 MAX_HTML_BYTES = 4 * 1024 * 1024
 MAX_API_BYTES = 128 * 1024
@@ -50,6 +50,7 @@ def _debug() -> bool:
 
 API_HOSTS = {"api.netlify.com", "api.telegram.org", "discord.com"}
 NETLIFY_API = "https://api.netlify.com/api/v1"
+PAGES_PUBLIC_URL = "https://eli-lain-intel.pages.dev/"
 ISO_TIME = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
 Resolver = Callable[[str], Sequence[str]]
 
@@ -70,6 +71,7 @@ class DeliveryConfig:
     telegram_chat_id: str
     discord_token: str
     discord_channel_id: str
+    public_report_url: str = ""
 
     def __repr__(self) -> str:
         return "DeliveryConfig(<redacted>)"
@@ -81,7 +83,10 @@ class DeliveryConfig:
                  "TELEGRAM_CHAT_ID", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")
         if any(not env.get(name) for name in names):
             raise DeliveryError("missing_config")
-        return cls(*(env[name] for name in names))
+        public_url = env.get("PUBLIC_REPORT_URL", "")
+        if public_url not in ("", PAGES_PUBLIC_URL):
+            raise DeliveryError("unsafe_public_url")
+        return cls(*(env[name] for name in names), public_report_url=public_url)
 
 
 @dataclass(frozen=True)
@@ -130,27 +135,53 @@ def load_artifact(export_dir: str | Path) -> ReportArtifact:
     directory = Path(export_dir)
     # Only the sanitized single-file export may be published. Deploying a
     # directory tree would expose state, databases or probe diagnostics.
-    if not directory.is_dir() or any(entry.name != "index.html" for entry in directory.iterdir()):
+    if (not directory.is_dir()
+            or getattr(directory.lstat(), "st_file_attributes", 0) & 0x400
+            or directory.is_symlink()
+            or any(entry.name != "index.html" for entry in directory.iterdir())):
         raise DeliveryError("unexpected_files")
     index = directory / "index.html"
     if not index.is_file() or index.is_symlink() or getattr(index.lstat(), "st_file_attributes", 0) & 0x400:
         raise DeliveryError("unexpected_files")
-    data = index.read_bytes()
-    # Refuse before any upload: an unbounded read means an unbounded body on the
-    # wire, and Netlify's own limit is lower than our response ceiling.
+    if index.stat().st_size > MAX_HTML_BYTES:
+        raise DeliveryError("artifact_too_large")
+    # Bound the read too, in case the file grows between stat() and open().
+    with index.open("rb") as handle:
+        data = handle.read(MAX_HTML_BYTES + 1)
     if len(data) > MAX_HTML_BYTES:
         raise DeliveryError("artifact_too_large")
-    soup = BeautifulSoup(data.decode("utf-8"), "html.parser")
-    # The published file must be genuinely standalone. Checking only the footer
-    # let a remote <script src> through, which would turn the public page into a
-    # live dependency and a leak channel on every future run.
-    for node in soup.find_all(["script", "link", "iframe", "object", "embed", "img", "source"]):
-        for attribute in ("src", "href", "data", "srcset", "action", "formaction", "poster"):
-            value = node.get(attribute)
-            if not isinstance(value, str) or not value.strip():
-                continue
-            if value.strip().lower().startswith(("http://", "https://", "//", "data:")):
-                raise DeliveryError("remote_dependency")
+    try:
+        text_html = data.decode("utf-8")
+        # Validate, but never rewrite, the bytes we are about to publish. Reuse
+        # the exporter's boundary so relative/active dependencies fail too.
+        # HTML parsing normalizes CRLF/CR before script CSP hashing. Preserve
+        # the original artifact bytes; normalize only this validation copy.
+        checked_html = _standalone_html(text_html.replace("\r\n", "\n").replace("\r", "\n"))
+    except (UnicodeError, ValueError):
+        raise DeliveryError("invalid_artifact") from None
+    soup = BeautifulSoup(text_html, "html.parser")
+    expected_policy = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', checked_html)
+    policies = soup.select('meta[http-equiv="Content-Security-Policy" i]')
+    referrers = soup.select('meta[name="referrer" i]')
+    if (not expected_policy or len(policies) != 1
+            or policies[0].get('content') != expected_policy[1]
+            or len(referrers) != 1 or referrers[0].get('content') != 'no-referrer'):
+        raise DeliveryError("invalid_artifact")
+    # Detect sensitive content even when HTML entities conceal punctuation.
+    # Credential SHAPES only: innocent catalog names containing token/password
+    # or sk-matt must not be discarded as if they were credentials.
+    from html import unescape
+    private = re.compile(
+        r"(?i)(?<![\w-])(?:sk-[A-Za-z0-9_-]{6,}|gh[pousr]_[A-Za-z0-9]{16,}"
+        r"|github_pat_[A-Za-z0-9_]{20,}|cfat_[A-Za-z0-9_-]{20,}"
+        r"|bearer\s+[A-Za-z0-9._~+/=-]{12,})"
+        r"|\b(?:api[_-]?key|access[_-]?token|password|secret|token)\s*[=:]\s*[\"']?[^\s&<>\"']{3,}"
+        r"|\b[a-z]:[\\/]|file://|(?<![A-Za-z0-9/:])/(?:users|home|tmp|etc)/"
+        r"|https?://(?:localhost(?:[/:.]|$)|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)"
+        r"|eli-mira/eli-lain-ai-tracker"
+    )
+    if private.search(unescape(text_html)) or private.search(soup.get_text(" ")):
+        raise DeliveryError("private_artifact")
     footer = soup.select_one("footer")
     text = footer.get_text(" ", strip=True) if footer else ""
     if "Public sanitized export of saved observations; not a fresh fetch." not in text:
@@ -221,6 +252,9 @@ def _destination_bindings(config: DeliveryConfig) -> dict[str, str]:
         "telegram": (config.site_id, config.telegram_token, config.telegram_chat_id),
         "discord": (config.site_id, config.discord_token, config.discord_channel_id),
     }
+    if config.public_report_url:
+        destinations = {channel: (*values, config.public_report_url)
+                        for channel, values in destinations.items()}
     return {channel: hashlib.sha256(json.dumps(values).encode("utf-8")).hexdigest()
             for channel, values in destinations.items()}
 
@@ -330,7 +364,7 @@ def _quiet_http_logs():
 
 
 class _Session:
-    def __init__(self, config: DeliveryConfig, transport: _PinnedTransport, client: httpx.Client):
+    def __init__(self, config: DeliveryConfig | None, transport: _PinnedTransport, client: httpx.Client):
         self.config, self.transport, self.client = config, transport, client
 
     def request(self, method: str, url: str, *, limit: int = MAX_API_BYTES, **kwargs) -> bytes:
@@ -418,6 +452,15 @@ class _Session:
             raise DeliveryError("html_mismatch")
         return HostedReport(url, artifact.sha256, deploy)
 
+    def pages(self, artifact: ReportArtifact) -> HostedReport:
+        # A fixed owned origin only; no arbitrary URL/redirect/credential path.
+        self.transport.allowed_hosts.add("eli-lain-intel.pages.dev")
+        actual = self.request("GET", PAGES_PUBLIC_URL, limit=MAX_HTML_BYTES,
+                              headers={"Accept": "text/html", "Cache-Control": "no-cache"})
+        if hashlib.sha256(actual).hexdigest() != artifact.sha256:
+            raise DeliveryError("html_mismatch")
+        return HostedReport(PAGES_PUBLIC_URL, artifact.sha256, "pages-byte-verified")
+
     def telegram(self, brief: str, artifact: ReportArtifact | None = None) -> ChannelReceipt:
         """Send the brief as text, then the verified standalone file.
 
@@ -486,6 +529,22 @@ class _Session:
             return ChannelReceipt("discord", None, "unconfirmed", exc.code)
 
 
+def verify_pages_report(export_dir: str | Path, *,
+                        transport: httpx.BaseTransport | None = None,
+                        resolver: Resolver = resolve_public_dns) -> HostedReport:
+    """Read back this owned Pages origin only. No deployment, credentials or sends."""
+    artifact = load_artifact(export_dir)
+    pinned = _PinnedTransport(resolver, transport)
+    try:
+        with _quiet_http_logs(), httpx.Client(transport=pinned, timeout=20.0,
+                                             trust_env=False, follow_redirects=False) as client:
+            return _Session(None, pinned, client).pages(artifact)
+    except DeliveryError:
+        raise
+    except Exception:
+        raise DeliveryError("readback_failed") from None
+
+
 def build_brief(artifact: ReportArtifact, hosted: HostedReport) -> str:
     observed = "not supplied" if not artifact.observations else artifact.observations[0]
     if len(artifact.observations) > 1:
@@ -524,6 +583,8 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
                                               follow_redirects=False) as client:
             session = _Session(config, pinned, client)
             hosted = session.host(artifact, poll_attempts, poll_interval, sleep)
+            if config.public_report_url:
+                hosted = session.pages(artifact)
             brief = build_brief(artifact, hosted)
             already = restored_receipts.get(artifact.sha256) or {}
             bindings = _destination_bindings(config)

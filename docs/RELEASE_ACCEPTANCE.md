@@ -4,6 +4,12 @@ Status: **NOT RELEASE-APPROVED**. Opened 2026-10-01 after Eli rejected plumbing-
 
 This checklist supersedes the old IMPLEMENTATION_TODO.md checked boxes and historical handoff completion language. PASS requires the actual output consumer and useful outcome, not merely a file existing or tests returning green.
 
+## Current repair gate — October 1, 2026
+
+The six newly reproduced defects and Pages CI integration now pass **792 combined parent tests**, with **46 real Chromium checks** on a newly regenerated saved-state artifact. Independent pre-commit review `deleg_1d830f47` is pending. Changes remain staged/local: remote main was read back at `f59b8c3` and the daily Pages gate at `false` on `2026-10-01T17:41:04Z`. Do not call these local repairs hosted acceptance or a release approval. Exact CLI/provider/summary boundaries, artifact hash and remaining gates are in `release-six-bugs-pages-integration.md`.
+
+Historical unchecked broad source/usefulness/security rows remain broad acceptance gates, not proof that none of their implementation exists. Historical attachment/cache fixes were subsequently exercised in hosted runs `36856918737` / `36860505208`. New Pages recurrence requires fresh manual hosted readback and attachment receipts before enabling it.
+
 ## Requirements locked by Eli
 - Fruit-slicer is paused/canceled. It is not an active recommendation target. Preserve historical state; do not delete the game project.
 - Active project recommendation groups: Hearth POS, gesture control, data/AI. Keep broad agent/tool/model discovery alongside them.
