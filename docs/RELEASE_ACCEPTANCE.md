@@ -107,6 +107,12 @@ No claim of zero bugs or release readiness until all blocking gates are closed w
 - Full suite **698 passed, no xfails**, exit 0. Commit `7869a97` pushed; CI run `36856918737` started on it.
 - **Still not live-verified:** provider binding pins, news/summary validation, Skills.sh detail selection. Regression-tested only. `Catalog expiration date` renders 0 times because the saved state predates the adapter retaining those fields; a fresh discovery run is required.
 
+## Hosted run 36860505208 — news truncation fix verified in production
+- Commit `e756bfd`, success. 701 passed / 2 skipped. Publish: `{"artifact": "public/index.html", "bytes": 2887807, "sha256": "d068303c6e06b00b20d0d0feafb8c3add6260c0af246fdbfd1ddfac0dc046cfc", "delivered": true, "discord": "independently-read-back", "telegram": "receipt-confirmed"}`.
+- **The news fix is confirmed live.** Both internal reports from that run render **`308 stories` with 308 rows** — previously `100 stories` against a 160-row database, silently truncated. Public export correctly still excludes news.
+- A second truth defect surfaced from that same log and was fixed in `d76d458`: `save_items` logged `({len(items)} total)` — the *batch* size labelled as a running total. It read `(160 total)` while 308 stories were retained. Now reports the real retained row count. Full suite **705 passed**.
+- Real Chromium QA against the previous hosted artifact: **86 assertions, 0 failures** at 390px/1440px × JS on/off, offline. 1,723 rows, per-source counts exact, 1,685 typed blocks + 38 honest not-supplied markers = every row covered, 1,790 links all on vetted hosts, 1,760 details toggling, 1 network request, zero errors, locked design confirmed. Evidence: `docs/release-hosted-artifact-verification.md`.
+
 ## Hosted CI verification — run 36856918737 (success)
 Commit `7869a97`, started 2026-10-01T11:41:11Z, completed successfully.
 - Clean-runner regression gate: **696 passed, 2 skipped in 44.11s**. The 2 skips are the Chromium-absent guard, expected on an unconfigured local run; the hosted run installs Chromium.
