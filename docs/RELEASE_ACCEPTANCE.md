@@ -106,3 +106,10 @@ No claim of zero bugs or release readiness until all blocking gates are closed w
 - Real artifact re-read by the parent: **1,894,744 bytes**, sha256 `45364502370e271ae9d40a71bf4613a0afc25ac8ef41bc7c9a6b7d73aa3672f4`, `load_artifact()` OK, 49/533/112/439/125 rows per source matching DOM counts, 19 tilde aliases restored, 1,259 typed metadata blocks, 38 explicit "not supplied", no fruit-slicer, no remote dependencies, under the 4 MB delivery ceiling.
 - Full suite **698 passed, no xfails**, exit 0. Commit `7869a97` pushed; CI run `36856918737` started on it.
 - **Still not live-verified:** provider binding pins, news/summary validation, Skills.sh detail selection. Regression-tested only. `Catalog expiration date` renders 0 times because the saved state predates the adapter retaining those fields; a fresh discovery run is required.
+
+## Hosted CI verification — run 36856918737 (success)
+Commit `7869a97`, started 2026-10-01T11:41:11Z, completed successfully.
+- Clean-runner regression gate: **696 passed, 2 skipped in 44.11s**. The 2 skips are the Chromium-absent guard, expected on an unconfigured local run; the hosted run installs Chromium.
+- Publish step: `{"attachment": "index.html", "delivered": true, "discord": "independently-read-back", "sha256": "ccaea0380b98cf01398aa5f2961ca8aee8451afcc7b359279991ea4b9a2c5ff6", "telegram": "receipt-confirmed", "url": "https://eli-lain-intel.netlify.app/"}`
+- The published sha256 differs from the local `4536450237…` because the hosted run performed a **fresh discovery and news fetch** before export. That is the first run where the new adapters, receipt state, cache/save split and full public projection all executed together in production conditions.
+- Delivery now: exact `index.html` bytes attached to both channels, Discord attachment independently read back, and `data/delivery_receipts.json` saved even on failure.
