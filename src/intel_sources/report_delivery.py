@@ -33,6 +33,20 @@ MAX_HTML_BYTES = 4 * 1024 * 1024
 MAX_API_BYTES = 128 * 1024
 log = logging.getLogger(__name__)
 
+
+def _debug() -> bool:
+    """True when DELIVERY_DEBUG is set, with the logger level made explicit.
+
+    `log.debug()` on a NOTSET logger inherits the root level (WARNING by
+    default) and is silently dropped - which is exactly how the first
+    host/status logging attempt vanished from CI. The level is set at call time
+    rather than import time so it does not depend on when the variable appears.
+    """
+    if not os.getenv("DELIVERY_DEBUG"):
+        return False
+    log.setLevel(logging.DEBUG)
+    return True
+
 API_HOSTS = {"api.netlify.com", "api.telegram.org", "discord.com"}
 NETLIFY_API = "https://api.netlify.com/api/v1"
 ISO_TIME = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
@@ -201,7 +215,7 @@ class _Session:
         try:
             with self.client.stream(method, url, follow_redirects=False, **kwargs) as response:
                 if not 200 <= response.status_code < 300:
-                    if os.getenv("DELIVERY_DEBUG"):
+                    if _debug():
                         # Host and status only: the URL path carries the Telegram
                         # token, so it must never reach a log line.
                         log.debug("delivery %s %s -> %s", method,
@@ -220,7 +234,7 @@ class _Session:
             # httpx messages embed the request URL, which carries the token, so
             # only the exception CLASS is ever recorded - and only under
             # DELIVERY_DEBUG, which makes an otherwise opaque failure diagnosable.
-            if os.getenv("DELIVERY_DEBUG"):
+            if _debug():
                 log.debug("delivery request failed: %s", type(error).__name__)
             raise DeliveryError("request_failed") from None
 
@@ -233,7 +247,7 @@ class _Session:
         except DeliveryError:
             raise
         except Exception as error:
-            if os.getenv("DELIVERY_DEBUG"):
+            if _debug():
                 log.debug("delivery api response invalid: %s", type(error).__name__)
             raise DeliveryError("invalid_response") from None
 

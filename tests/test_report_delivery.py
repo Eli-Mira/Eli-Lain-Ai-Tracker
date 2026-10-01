@@ -416,3 +416,52 @@ def test_debug_log_identifies_host_and_status_without_token(monkeypatch, caplog)
     assert "404" in logged, "the failing status must be identifiable"
     assert "SECRET" not in logged
     assert "/bot123" not in logged, "the token-bearing path must never be logged"
+
+
+def test_debug_log_emits_even_when_root_logger_is_at_warning(monkeypatch, caplog):
+    """DEBUG must survive a default WARNING root logger.
+
+    The first attempt at host/status logging never appeared in CI at all:
+    `log.debug()` on a logger with no level of its own inherits the root
+    logger's WARNING, so the line was silently dropped and the failure stayed
+    opaque. The delivery logger must set its own level under DELIVERY_DEBUG.
+    """
+    import logging
+
+    from intel_sources.report_delivery import DeliveryError, _Session, _quiet_http_logs, log
+
+    class Response:
+        status_code = 503
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_bytes(self):
+            return iter([b""])
+
+    class Client:
+        def stream(self, method, url, **kwargs):
+            return Response()
+
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.WARNING)
+    try:
+        monkeypatch.setenv("DELIVERY_DEBUG", "1")
+        session = _Session(None, None, Client())
+        with caplog.at_level(logging.DEBUG, logger="intel_sources.report_delivery"):
+            with _quiet_http_logs():
+                with pytest.raises(DeliveryError):
+                    session.request("GET", "https://eli-lain-intel.netlify.app/")
+        # Assert the emitted record, not logger internals: pytest's caplog
+        # context resets handler levels on exit, so `log.level` afterwards is
+        # not evidence of anything.
+        records = [r for r in caplog.records if r.name == log.name]
+        assert records, "the delivery logger must emit a record"
+        assert records[-1].getMessage() == (
+            "delivery GET eli-lain-intel.netlify.app -> 503")
+    finally:
+        root.setLevel(previous)
