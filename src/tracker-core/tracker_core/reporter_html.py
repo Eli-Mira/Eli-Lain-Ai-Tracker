@@ -28,6 +28,26 @@ def _safe_http_url(value: Any) -> str:
     return value
 
 
+def _news_timestamp(value: Any, sqlite_utc: bool = False) -> str | None:
+    """Format saved news time; only SQLite's fetched-date contract implies UTC."""
+    from datetime import datetime, timezone
+
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str) and len(value) <= 64 and ("T" in value or " " in value):
+            parsed = datetime.fromisoformat(value)
+        else:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            if not sqlite_utc:
+                return None  # A publication time without an offset is ambiguous.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 class HTMLReporter:
     """Generate HTML reports from tracker data using templates."""
     
@@ -41,6 +61,7 @@ class HTMLReporter:
             autoescape=True
         )
         self.env.filters["safe_url"] = _safe_http_url
+        self.env.filters["news_timestamp"] = _news_timestamp
     
     def render(
         self,

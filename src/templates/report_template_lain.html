@@ -292,6 +292,7 @@
     {% else %}
     <p class="meta">{{ news_items|length }} stories</p>
     {% endif %}
+    <p class="meta">Dates distinguish publication from the saved observation; regenerating this report does not refresh either.</p>
     <ul class="items">
       {% for item in news_items %}
       <li class="item">
@@ -299,6 +300,9 @@
           <span class="item-name">{{ safe_link(item.url, item.headline) }}</span>
         </div>
         <div class="item-desc">{{ item.summary }} <span class="item-source">— {{ item.source }}</span></div>
+        {% set publication = item.published_date|news_timestamp %}
+        {% set observation = item.fetched_date|news_timestamp(true) %}
+        <div class="item-source news-dates">Publication (UTC): {% if publication %}<time datetime="{{ publication }}">{{ publication }}</time>{% else %}unknown{% endif %} · Saved observation (UTC): {% if observation %}<time datetime="{{ observation }}">{{ observation }}</time>{% else %}unknown{% endif %}</div>
       </li>
       {% else %}<li class="item empty-state">No stories supplied.</li>{% endfor %}
     </ul>

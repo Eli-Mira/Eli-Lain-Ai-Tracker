@@ -439,6 +439,8 @@ class NewsTracker:
                     "source": item.get("source", "unknown"),
                     "summary": item.get("summary") or "",
                     "url": item.get("url", "#"),
+                    "published_date": item.get("published_date"),
+                    "fetched_date": item.get("fetched_date"),
                 })
 
         intel = self.intel_store.read()
