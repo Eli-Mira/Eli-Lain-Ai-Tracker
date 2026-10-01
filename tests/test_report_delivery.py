@@ -465,3 +465,48 @@ def test_debug_log_emits_even_when_root_logger_is_at_warning(monkeypatch, caplog
             "delivery GET eli-lain-intel.netlify.app -> 503")
     finally:
         root.setLevel(previous)
+
+
+def test_pinned_address_prefers_reachable_ipv4_and_reports_families():
+    """Pin a reachable address, and prefer IPv4 when a host is dual-stack.
+
+    The transport pinned `addresses[0]` from getaddrinfo, whose ordering is
+    platform-dependent: this Windows host returns IPv4 only, while a
+    dual-stack CI runner may order an unreachable IPv6 literal first. Pinning
+    one arbitrary answer turned that into an opaque ConnectError.
+
+    Every candidate must still be validated as global - preferring IPv4 is an
+    ordering choice, not a relaxation of the DNS safety rule.
+    """
+    import ipaddress
+
+    from intel_sources.report_delivery import DeliveryError, _PinnedTransport
+
+    answers = ["2606:4700::1", "104.18.32.7", "172.64.80.1"]
+    seen = {}
+
+    class Recorder:
+        def handle_request(self, request):
+            seen["host"] = request.url.host
+            raise RuntimeError("stop here")
+
+        def close(self):
+            pass
+
+    # api.netlify.com is in the module allowlist, so this exercises pinning
+    # rather than the allowlist guard.
+    transport = _PinnedTransport(lambda host: answers, Recorder())
+    request = httpx.Request("GET", "https://api.netlify.com/api/v1/user")
+    with pytest.raises(RuntimeError):
+        transport.handle_request(request)
+
+    pinned = seen["host"].strip("[]")
+    assert ipaddress.ip_address(pinned).version == 4, "must prefer a reachable IPv4 literal"
+    assert pinned == "104.18.32.7"
+
+    # Preferring IPv4 is an ordering choice, not a relaxation: a non-global
+    # answer anywhere in the set is still refused outright.
+    unsafe = _PinnedTransport(lambda host: ["2606:4700::1", "127.0.0.1"], Recorder())
+    with pytest.raises(DeliveryError) as caught:
+        unsafe.handle_request(httpx.Request("GET", "https://api.netlify.com/api/v1/user"))
+    assert caught.value.code == "unsafe_dns"

@@ -158,6 +158,21 @@ def resolve_public_dns(host: str) -> Sequence[str]:
     return list({row[4][0] for row in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)})
 
 
+def prefer_reachable(addresses: Sequence[str]) -> Sequence[str]:
+    """Order validated addresses so the most likely-reachable one is pinned first.
+
+    getaddrinfo ordering is platform-dependent: this Windows host returns IPv4
+    only for these hosts, while a dual-stack CI runner can order an IPv6
+    literal first and then fail to connect to it, surfacing as an opaque
+    ConnectError. IPv4 is preferred because hosted/CDN edges reachable over it
+    are the common case; IPv6 answers remain available as fallbacks.
+
+    This is ordering only. Every address is still checked for being global by
+    the caller, so the DNS safety rule is unchanged.
+    """
+    return sorted(addresses, key=lambda ip: ipaddress.ip_address(ip).version != 4)
+
+
 class _PinnedTransport(httpx.BaseTransport):
     """Connect only to validated global IPs; preserve the hostname for TLS SNI.
 
@@ -177,7 +192,10 @@ class _PinnedTransport(httpx.BaseTransport):
         addresses = self.resolver(host)
         if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
             raise DeliveryError("unsafe_dns")
-        pinned = httpx.Request(request.method, request.url.copy_with(host=addresses[0]),
+        ordered = prefer_reachable(addresses)
+        if _debug():
+            log.debug("delivery pinned %s -> %s", host, ordered[0])
+        pinned = httpx.Request(request.method, request.url.copy_with(host=ordered[0]),
                               headers=request.headers, stream=request.stream,
                               extensions={**request.extensions, "sni_hostname": host})
         inner = self.test_transport
