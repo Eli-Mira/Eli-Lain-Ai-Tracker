@@ -201,6 +201,11 @@ class _Session:
         try:
             with self.client.stream(method, url, follow_redirects=False, **kwargs) as response:
                 if not 200 <= response.status_code < 300:
+                    if os.getenv("DELIVERY_DEBUG"):
+                        # Host and status only: the URL path carries the Telegram
+                        # token, so it must never reach a log line.
+                        log.debug("delivery %s %s -> %s", method,
+                                  urlsplit(url).hostname, response.status_code)
                     raise DeliveryError("http_status")
                 data = bytearray()
                 for chunk in response.iter_bytes():

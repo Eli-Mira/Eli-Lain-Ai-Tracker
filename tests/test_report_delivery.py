@@ -375,3 +375,44 @@ def test_unexpected_transport_exception_is_reported_by_class_only(monkeypatch, c
     assert "RuntimeError" in logged
     assert "SECRET" not in logged
     assert "SECRET" not in str(caught.value)
+
+
+def test_debug_log_identifies_host_and_status_without_token(monkeypatch, caplog):
+    """The failure record must say WHICH host answered with WHICH status.
+
+    Knowing only that an exception occurred left a real deploy failure
+    undiagnosable. Log method, hostname and status code - never the path,
+    which carries the Telegram token, and never the body.
+    """
+    import logging
+
+    from intel_sources.report_delivery import DeliveryError, _Session, _quiet_http_logs
+
+    class Response:
+        status_code = 404
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_bytes(self):
+            return iter([b""])
+
+    class Client:
+        def stream(self, method, url, **kwargs):
+            return Response()
+
+    session = _Session(None, None, Client())
+    monkeypatch.setenv("DELIVERY_DEBUG", "1")
+    with caplog.at_level(logging.DEBUG, logger="intel_sources.report_delivery"):
+        with _quiet_http_logs():
+            with pytest.raises(DeliveryError) as caught:
+                session.request("GET", "https://api.telegram.org/bot123:SECRET/sendMessage")
+    assert caught.value.code == "http_status"
+    logged = caplog.text
+    assert "api.telegram.org" in logged, "the failing host must be identifiable"
+    assert "404" in logged, "the failing status must be identifiable"
+    assert "SECRET" not in logged
+    assert "/bot123" not in logged, "the token-bearing path must never be logged"
