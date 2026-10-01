@@ -103,6 +103,8 @@ jobs:
       - name: Publish export and notify (opt-in via PUBLISH_ENABLED)
         if: ${{ vars.PUBLISH_ENABLED == 'true' }}
         env:
+          # Class-name-only failure diagnostics; never logs messages or URLs.
+          DELIVERY_DEBUG: "1"
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

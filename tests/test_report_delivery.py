@@ -339,3 +339,39 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert [r.headers["host"] for r in protocol.calls] == ["api.netlify.com"] * 4 + [
         "abc123--report-fixture.netlify.app", "api.telegram.org", "discord.com", "discord.com"]
     assert (artifact_dir / "index.html").read_bytes() == data
+
+
+def test_unexpected_transport_exception_is_reported_by_class_only(monkeypatch, caplog):
+    """A swallowed exception must still be diagnosable without leaking the URL.
+
+    The delivery path deliberately replaces every unexpected exception with a
+    safe `request_failed` code, which made a real CI failure impossible to
+    diagnose. When DELIVERY_DEBUG is set, the exception *class name* is logged
+    so the failure is identifiable; the message and URL never are, because
+    httpx messages embed the token-bearing request URL.
+    """
+    import logging
+
+    from intel_sources.report_delivery import DeliveryError, _Session, _quiet_http_logs
+
+    class Exploding:
+        def stream(self, *args, **kwargs):
+            raise RuntimeError("connect failed for https://api.telegram.org/bot123:SECRET/")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    session = _Session(None, None, Exploding())
+    monkeypatch.setenv("DELIVERY_DEBUG", "1")
+    with caplog.at_level(logging.DEBUG, logger="intel_sources.report_delivery"):
+        with _quiet_http_logs():
+            with pytest.raises(DeliveryError) as caught:
+                session.request("GET", "https://api.telegram.org/bot123:SECRET/sendMessage")
+    assert caught.value.code == "request_failed"
+    logged = caplog.text
+    assert "RuntimeError" in logged
+    assert "SECRET" not in logged
+    assert "SECRET" not in str(caught.value)
