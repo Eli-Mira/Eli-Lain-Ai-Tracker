@@ -136,7 +136,11 @@ class SQLiteStore:
                 logger.warning("Failed to save news item (%s); valid siblings retained", type(e).__name__)
 
         conn.commit()
-        logger.info(f"Saved {inserted} new items to SQLite ({len(items)} total)")
+        # `len(items)` is the size of the batch handed to this call, not the
+        # number of rows the database retains. Labelling it "total" made a
+        # restored-cache replay read as a running total.
+        logger.info(f"Saved {inserted} new items to SQLite "
+                    f"({self.count_items(days=0)} retained)")
         return inserted
 
     def existing_urls(self, items: list[NewsItem]) -> set[str]:
