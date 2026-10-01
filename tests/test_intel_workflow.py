@@ -69,3 +69,27 @@ def test_public_export_step_runs_before_any_publish_or_upload():
     assert export_index < publish_index
     assert export_index < public_upload
     assert steps[public_upload]['with']['name'].startswith('elain-public')
+
+
+def test_workflow_references_no_deleted_email_secrets():
+    """The email channel was removed; the workflow must not request its secrets.
+
+    Deleting EMAIL_* secrets while the workflow still injects them leaves
+    empty-string credentials in the environment, which is how a removed
+    channel turns into a recurring authentication error instead of simply
+    disappearing.
+    """
+    text = (ROOT/'.github/workflows/news-tracker-daily.yml').read_text(encoding='utf-8')
+    workflow = yaml.safe_load(text)
+    steps = workflow['jobs']['run-elilain-audit']['steps']
+    env_names = set()
+    for step in steps:
+        env_names.update((step.get('env') or {}).keys())
+    removed = {'EMAIL_HOST', 'EMAIL_PORT', 'EMAIL_USER', 'EMAIL_PASSWORD', 'EMAIL_TO'}
+    assert not (env_names & removed), f"workflow still injects removed secrets: {env_names & removed}"
+    assert 'secrets.EMAIL_' not in text
+
+    # The channel list comes from an encrypted secret, not the plaintext variable.
+    audit = next(s for s in steps if 'main.py audit' in s.get('run', ''))
+    assert audit['env']['NOTIFICATION_CHANNEL'] == '${{ secrets.NOTIFICATION_CHANNEL }}'
+    assert 'NOTIFICATION_CHANNEL' not in env_names - {'NOTIFICATION_CHANNEL'}

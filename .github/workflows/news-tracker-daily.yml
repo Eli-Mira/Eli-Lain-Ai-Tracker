@@ -65,10 +65,8 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
-          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
-          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          # Email was removed from the channel list; its EMAIL_* secrets are
+          # deleted. Injecting them here would only supply empty credentials.
           NOTIFICATION_CHANNEL: ${{ secrets.NOTIFICATION_CHANNEL }}
         # 'today' fetches + stores news and pushes breaking items;
         # 'audit' refreshes discovery and renders providers + news + tools.
