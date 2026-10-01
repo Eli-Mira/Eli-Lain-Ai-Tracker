@@ -125,16 +125,14 @@ Only return valid JSON, no markdown formatting."""
                 data = response.json()
                 return data["choices"][0]["message"]["content"]
         except Exception as e:
-            logger.error(f"Summarization failed: {e}")
-            return "[{\"summary\": \"Error generating summary\", \"dedup_key\": \"error\"}]"
+            logger.error("Summarization unavailable (%s); preserving observed news", type(e).__name__)
+            raise RuntimeError("AI summarization unavailable") from e
     
     def summarize_manually(self, items: list[NewsItem]) -> list[NewsItem]:
         """Fallback: generate simple summaries without LLM."""
         for item in items:
             if not item.summary:
-                # Extract first sentence from title or raw data
-                title_words = item.title.split()[:8]
-                item.summary = " ".join(title_words) + "..."
+                item.summary = "Title excerpt (not AI summary): " + item.title
         return items
 
 
@@ -153,6 +151,8 @@ async def summarize_news(
         List of NewsItem with summaries
     """
     summarizer = Summarizer(config)
+    if not summarizer.api_key:
+        return summarizer.summarize_manually(items)
     
     # Try LLM summarization first
     try:

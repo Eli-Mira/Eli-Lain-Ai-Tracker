@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import FreeProvider, ProviderStatus, ProviderTier, FreellmapiIntegrationType, ProviderProbeResult
+from .models import FreeProvider, ProviderStatus, ProviderTier, FreellmapiIntegrationType, ProviderProbeResult, aware_utc, sanitize_evidence
 from .prober import AutoProber
 
 
@@ -217,23 +217,45 @@ class FreeProviderTracker:
     
     def load_from_db(self) -> int:
         """Load existing providers from freellmapi SQLite DB."""
+        conn = None
         try:
             import sqlite3
-            conn = sqlite3.connect(str(self.db_path))
+            if not self.db_path.is_file():
+                logger.warning("freellmapi DB not found")
+                return 0
+            conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             
-            rows = cur.execute("SELECT platform, label, status, enabled FROM api_keys").fetchall()
+            rows = cur.execute("SELECT id, platform, label, status, enabled FROM api_keys ORDER BY enabled DESC, id").fetchall()
             loaded = 0
             
+            seen = set()
             for row in rows:
                 platform = row["platform"]
-                if platform not in self.providers:
-                    provider = self._build_provider_from_db(platform, row)
-                    self.providers[platform] = provider
-                    loaded += 1
+                if platform in seen:
+                    continue
+                seen.add(platform)
+                db_provider = self._build_provider_from_db(platform, row)
+                current = self.providers.get(platform)
+                if current is None:
+                    self.providers[platform] = db_provider
+                else:
+                    same_key = current.freellmapi_key_id == db_provider.freellmapi_key_id
+                    was_disabled = current.status == ProviderStatus.DISABLED
+                    for name in ("freellmapi_key_id", "freellmapi_key_label", "freellmapi_integration", "probe_enabled"):
+                        setattr(current, name, getattr(db_provider, name))
+                    if not same_key or was_disabled:
+                        current.checked_at = current.last_verified = None
+                        current.probe_evidence = []
+                        current.probe_source = current.last_verified_source = ""
+                        current.status = ProviderStatus.UNKNOWN
+                        current.status_reason = "Key configuration changed; re-probe required"
+                        current.freellmapi_action = "Re-probe provider"
+                    if db_provider.status == ProviderStatus.DISABLED:
+                        current.status = ProviderStatus.DISABLED
+                loaded += 1
             
-            conn.close()
             logger.info(f"Loaded {loaded} providers from freellmapi DB")
             return loaded
             
@@ -241,16 +263,19 @@ class FreeProviderTracker:
             logger.error(f"freellmapi DB not found at {self.db_path}")
             return 0
         except Exception as e:
-            logger.error(f"Failed to load providers from DB: {e}")
+            logger.error("Failed to read provider DB (%s)", type(e).__name__)
             return 0
+        finally:
+            if conn is not None:
+                conn.close()
     
     def _build_provider_from_db(self, platform: str, row: Any) -> FreeProvider:
         """Build FreeProvider from DB row."""
         key_info = self.PROVIDER_REGISTRY.get(platform, {})
-        key_id = self.KEY_ID_MAP.get(platform)
+        key_id = row["id"]
         
         # Determine integration type
-        if key_id and row["enabled"] == 1:
+        if key_id is not None:
             if platform in ["cohere", "groq", "mistral", "cloudflare", "github", 
                           "cerebras", "openrouter", "zhipu", "huggingface", "google"]:
                 integration = FreellmapiIntegrationType.IN_CATALOG_KEY_IN_DB
@@ -261,10 +286,11 @@ class FreeProviderTracker:
         else:
             integration = FreellmapiIntegrationType.IN_CATALOG_NO_KEY
         
-        status = ProviderStatus.LIVE if row["status"] == "healthy" and row["enabled"] else ProviderStatus.DISABLED
+        enabled = row["enabled"] == 1
+        status = ProviderStatus.UNKNOWN if enabled else ProviderStatus.DISABLED
         
         return FreeProvider(
-            name=key_info.get("tier_details", platform).split("(")[0].strip(),
+            name=platform.replace("_", " ").title(),
             platform=platform,
             tier_type=key_info.get("tier_type", ProviderTier.UNKNOWN),
             tier_details=key_info.get("tier_details", ""),
@@ -273,27 +299,59 @@ class FreeProviderTracker:
             freellmapi_key_id=key_id,
             freellmapi_integration=integration,
             freellmapi_key_label=row["label"] if row["label"] else "",
-            probe_enabled=True,
+            probe_enabled=enabled,
             probe_model=LIGHTWEIGHT_MODELS.get(platform, ""),
         )
     
+    def load_probe_catalog(self) -> dict[str, list[str]]:
+        """Read actual enabled model bindings; generic owned_by is not upstream identity."""
+        import sqlite3
+        if not self.db_path.is_file():
+            return {}
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+            rows = conn.execute("SELECT platform, model_id, key_id FROM models WHERE enabled=1 ORDER BY id" if "id" in {r[1] for r in conn.execute("PRAGMA table_info(models)")} else "SELECT platform, model_id, key_id FROM models WHERE enabled=1 ORDER BY model_id").fetchall()
+            catalog = {}
+            for platform, model_id, key_id in rows:
+                provider = self.providers.get(platform)
+                if provider and provider.probe_enabled and provider.status != ProviderStatus.DISABLED and key_id in (None, provider.freellmapi_key_id) and isinstance(model_id, str):
+                    if model_id not in catalog.setdefault(platform, []):
+                        catalog[platform].append(model_id)
+            return catalog
+        except sqlite3.Error as exc:
+            logger.warning("Model binding catalog unavailable (%s)", type(exc).__name__)
+            return {}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def apply_probe_result(self, platform: str, result: ProviderProbeResult) -> FreeProvider:
+        """Apply the observation timestamp, never the rendering/loading time."""
+        if result.provider_platform != platform:
+            raise ValueError("Probe platform does not match target provider")
+        provider = self.providers[platform]
+        self.probe_results[platform] = result
+        provider.checked_at = aware_utc(getattr(result, "checked_at", None) or result.timestamp)
+        provider.last_verified = provider.checked_at
+        provider.probe_source = getattr(result, "probe_source", "local:freellmapi")
+        provider.last_verified_source = "probe"
+        provider.probe_evidence = sanitize_evidence(result.evidence)
+        if provider.status != ProviderStatus.DISABLED:
+            provider.status, provider.status_reason = result.to_status()
+            provider.freellmapi_action = self._generate_action(provider, result)
+        return provider
+
     async def update_providers(self) -> list[FreeProvider]:
         """Update all tracked providers with latest status."""
         updates = []
         
         for platform, provider in self.providers.items():
             # Check if we should probe
-            if provider.probe_enabled and provider.status in (ProviderStatus.LIVE, ProviderStatus.UNKNOWN):
+            if provider.probe_enabled and provider.status != ProviderStatus.DISABLED:
                 result = await self._probe_single(provider)
                 if result:
-                    status, reason = result.to_status()
-                    provider.status = status
-                    provider.status_reason = reason
-                    provider.last_verified = datetime.now(timezone.utc)
-                    provider.last_verified_source = "probe"
-                    
-                    # Update action recommendation
-                    provider.freellmapi_action = self._generate_action(provider, result)
+                    self.apply_probe_result(platform, result)
             
             updates.append(provider)
         
@@ -353,8 +411,23 @@ class FreeProviderTracker:
         if self.state_path.exists():
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
             for platform, pdata in data.get("providers", {}).items():
-                if platform not in self.providers:
-                    self.providers[platform] = FreeProvider.from_dict(pdata)
+                persisted = FreeProvider.from_dict(pdata)
+                current = self.providers.get(platform)
+                if current is None:
+                    self.providers[platform] = persisted
+                    continue
+                for name in ("notes", "tags", "dashboard_url", "key_format", "discovered_from", "discovery_date", "is_new", "probe_model", "probe_cost_estimate"):
+                    if name in pdata:
+                        setattr(current, name, getattr(persisted, name))
+                # DB owns identity, key availability and enabled flags. State owns probes.
+                if persisted.freellmapi_key_id not in (None, current.freellmapi_key_id) or persisted.status == ProviderStatus.DISABLED:
+                    continue
+                if persisted.checked_at and (current.checked_at is None or persisted.checked_at >= current.checked_at):
+                    for name in ("checked_at", "last_verified", "probe_source", "probe_evidence", "last_verified_source"):
+                        setattr(current, name, getattr(persisted, name))
+                    if current.status != ProviderStatus.DISABLED:
+                        for name in ("status", "status_reason", "freellmapi_action"):
+                            setattr(current, name, getattr(persisted, name))
             logger.info(f"Loaded {len(self.providers)} providers from state")
 
 

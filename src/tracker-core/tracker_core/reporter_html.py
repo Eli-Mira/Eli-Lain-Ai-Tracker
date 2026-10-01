@@ -4,8 +4,28 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
+
+
+def _safe_http_url(value: Any) -> str:
+    """Return an absolute HTTP(S) URL unchanged, or an inert empty value."""
+    if not isinstance(value, str) or not value:
+        return ""
+    # Reject browser/parser normalization ambiguities rather than repairing input.
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value) or "\\" in value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if parsed.username is not None or parsed.password is not None:
+            return ""
+        parsed.port  # Validate malformed ports without normalizing the URL.
+    except ValueError:
+        return ""
+    return value
 
 
 class HTMLReporter:
@@ -19,6 +39,7 @@ class HTMLReporter:
             loader=FileSystemLoader(str(self.TEMPLATE_DIR)),
             autoescape=True
         )
+        self.env.filters["safe_url"] = _safe_http_url
     
     def render(
         self,
@@ -27,7 +48,15 @@ class HTMLReporter:
         tool_items: list[dict[str, Any]] | None = None,
         report_date: str | None = None,
         generated_at: str | None = None,
-        persona_image_url: str | None = None
+        persona_image_url: str | None = None,
+        *,
+        change_items: list[dict[str, Any]] | None = None,
+        baseline: bool = False,
+        action_items: list[dict[str, Any]] | None = None,
+        source_items: list[dict[str, Any]] | None = None,
+        runtime_source: str | None = None,
+        recommendation_groups: dict[str, dict[str, Any]] | None = None,
+        recommendation_coverage: dict[str, Any] | None = None,
     ) -> str:
         from datetime import datetime, timezone
         
@@ -44,7 +73,7 @@ class HTMLReporter:
         
         try:
             template = self.env.get_template(template_name)
-        except Exception:
+        except TemplateNotFound:
             template = self.env.get_template("report_template.html")
         
         return template.render(
@@ -54,6 +83,13 @@ class HTMLReporter:
             news_items=news_items,
             tool_items=tool_items,
             persona_image_url=persona_image_url,
+            change_items=change_items or [],
+            baseline=baseline,
+            action_items=action_items or [],
+            source_items=source_items or [],
+            runtime_source=runtime_source,
+            recommendation_groups=recommendation_groups or {},
+            recommendation_coverage=recommendation_coverage or {},
         )
     
     def save(
@@ -65,6 +101,14 @@ class HTMLReporter:
         report_date: str | None = None,
         generated_at: str | None = None,
         persona_image_url: str | None = None,
+        *,
+        change_items: list[dict[str, Any]] | None = None,
+        baseline: bool = False,
+        action_items: list[dict[str, Any]] | None = None,
+        source_items: list[dict[str, Any]] | None = None,
+        runtime_source: str | None = None,
+        recommendation_groups: dict[str, dict[str, Any]] | None = None,
+        recommendation_coverage: dict[str, Any] | None = None,
     ) -> Path:
         html = self.render(
             api_items=api_items,
@@ -73,6 +117,13 @@ class HTMLReporter:
             report_date=report_date,
             generated_at=generated_at,
             persona_image_url=persona_image_url,
+            change_items=change_items or [],
+            baseline=baseline,
+            action_items=action_items or [],
+            source_items=source_items or [],
+            runtime_source=runtime_source,
+            recommendation_groups=recommendation_groups or {},
+            recommendation_coverage=recommendation_coverage or {},
         )
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,11 +1,11 @@
-<!--
+{% raw %}<!--
   REPORT TEMPLATE — read before editing
   ============================================================================
   LOCKED  — the <style> block and the tag structure around each section.
             Changing these changes how every future report looks. Only touch
             if the brief itself changes (new brand, new layout).
-  EDITABLE — everything inside the two for loops below, and the two
-            <p class="meta"> lines. Add/remove items here freely — that's
+  EDITABLE — everything inside the two {% for %} loops below, and the two
+            <p class="meta"> lines. Add/remove *items* here freely — that's
             the whole point, this is what changes every run.
 
   DATA CONTRACT — report.py must pass:
@@ -18,6 +18,34 @@
   Removing a field used below will break rendering — grep for it first.
   ============================================================================
 -->
+{% endraw %}
+<!--
+  INTEL EXTENSION CONTRACT (original locked style and header preserved above):
+    change_items: headline, source, summary, url, change_type
+    action_items: title, priority, reason, action, url
+    source_items: name, status, checked_at, item_count, error, url, coverage
+    tool_items: headline, source, summary, url; optional id, project_types,
+                evidence (list of dictionaries), freshness, change_type
+    api_items: name, status, description; optional actual_status, freshness,
+               checked_at, probe_source, evidence (list of dictionaries)
+    baseline: true means the first run has no previous snapshot to compare
+    runtime_source: explicit runner label, otherwise runtime not supplied
+  Empty states remain visible; timestamps are not synthesized as probe evidence.
+  Extension styles live in a separate block. Only HTTP(S) URLs are clickable.
+-->
+{% macro safe_link(url, label) -%}
+{% set href = url|safe_url %}{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ label }}</a>{% else %}{{ label }}{% endif %}
+{%- endmacro %}
+{% macro evidence_details(items) -%}
+<details class="evidence">
+  <summary>Evidence ({{ items|length }})</summary>
+  <ul class="evidence-list">
+    {% for entry in items %}
+    <li>{% if entry is mapping %}{% for key, value in entry.items() %}<div><span class="item-source">{{ key }}:</span> {% if key == 'url' %}{{ safe_link(value, value) }}{% else %}{{ value }}{% endif %}</div>{% endfor %}{% else %}{{ entry }}{% endif %}</li>
+    {% else %}<li>No evidence supplied — unverified.</li>{% endfor %}
+  </ul>
+</details>
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -126,19 +154,77 @@
     .wrap { padding: 32px 16px 48px; }
   }
 </style>
+<style id="intel-extensions">
+  /* Additive extension rules only; original locked style block is unchanged. */
+  .tracker .item-line { flex-wrap: wrap; }
+  .tracker .item { overflow-wrap: anywhere; }
+  .tracker .evidence { font-size: 13px; margin-top: 6px; }
+  .tracker .evidence summary { cursor: pointer; color: var(--text); }
+  .tracker .evidence-list { padding-left: 20px; }
+  .tracker .evidence a { color: var(--text); }
+  .discovery-filters { display: grid; gap: 6px; font-size: 13px; }
+  .discovery-filters input, .discovery-filters select { width: 100%; min-width: 0; font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 6px; }
+  .discovery-filters :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  .tracker [hidden] { display: none !important; }
+</style>
 </head>
 <body>
 <div class="wrap">
 
   <header class="report-head">
-    <div class="prompt">eli@mira <span class="cmd">~$ ./tracker report --date={{ report_date }}</span></div>
+    <div class="prompt">{{ runtime_source|default("runtime not supplied", true) }} <span class="cmd">~$ ./tracker report --date={{ report_date }}</span></div>
     <h1>tracker report — {{ report_date }}</h1>
   </header>
 
-  <!-- ===== EDITABLE: content below driven entirely by api_items ===== -->
-  <section class="tracker api">
+  <!-- Extension: change-first digest; original inventory markup follows. -->
+  <section class="tracker changes" id="changes" aria-label="Changes since previous run">
+    <div class="section-head"><span class="cmd">$ changes-since-last-run</span></div>
+    {% if baseline %}<p class="meta">First run — baseline captured; no previous snapshot to compare.</p>{% endif %}
+    <ul class="items">
+      {% for item in change_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="status">[{{ item.change_type }}]</span></div>
+        <div class="item-desc">{{ item.summary }}</div>
+        <div class="item-source">{{ item.source }}</div>
+      </li>
+      {% else %}
+      <li class="item empty-state">{% if baseline %}Inventory below establishes the baseline.{% else %}No material changes detected since the previous run.{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+
+  <section class="tracker actions" id="actions" aria-label="Recommended actions">
+    <div class="section-head"><span class="cmd">$ next-actions</span></div>
+    <ul class="items">
+      {% for item in action_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.title) }}</span><span class="status">[{{ item.priority }}]</span></div>
+        <div class="item-desc">Reason: {{ item.reason }}</div>
+        <div class="item-desc">Action: {{ item.action }}</div>
+      </li>
+      {% else %}<li class="item empty-state">No actions supplied.</li>{% endfor %}
+    </ul>
+  </section>
+
+  <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
+    <div class="section-head"><span class="cmd">$ source-health</span></div>
+    <p class="meta">Collection health and coverage; not provider availability.</p>
+    <ul class="items">
+      {% for item in source_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.name) }}</span><span class="status">[{{ item.status|default('unverified', true) }}]</span></div>
+        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · {{ item.item_count|default('unknown') }} items · Coverage: {{ item.coverage|default('not supplied', true) }}</div>
+        {% if item.error %}<div class="item-desc">Error: {{ item.error }}</div>{% endif %}
+      </li>
+      {% else %}<li class="item empty-state">Source health not supplied — coverage unverified.</li>{% endfor %}
+    </ul>
+  </section>
+
+  <!-- Original provider section, extended with independent probe metadata. -->
+  <section class="tracker api" id="providers" aria-label="Provider inventory">
     <div class="section-head"><span class="cmd">$ free-api-tracker</span></div>
-    <p class="meta">{{ api_items|length }} providers tracked</p>
+    <p class="meta">{{ api_items|length }} providers tracked · status is not a freshness claim</p>
     <ul class="items">
       {% for item in api_items %}
       <li class="item">
@@ -147,29 +233,104 @@
           <span class="status {{ item.status }}">[{{ item.status }}]</span>
         </div>
         <div class="item-desc">{{ item.description }}</div>
+        <div class="item-source">Actual status: {{ item.actual_status|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
+        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · Probe source: {{ item.probe_source|default('not supplied', true) }}</div>
+        {{ evidence_details(item.evidence|default([], true)) }}
       </li>
-      {% endfor %}
+      {% else %}<li class="item empty-state">No providers supplied.</li>{% endfor %}
     </ul>
   </section>
 
-  <section class="tracker news">
+  <!-- Extension: tools and model discoveries share the discovery contract. -->
+  <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
+    <div class="section-head"><span class="cmd">$ github-discovery</span></div>
+    <p class="meta">{{ tool_items|length }} tool / model discoveries</p>
+    <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
+      <label for="discovery-search">Search discoveries</label>
+      <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list">
+      <label for="discovery-project">Project type</label>
+      <select id="discovery-project" aria-controls="discovery-list"><option value="">All project types</option></select>
+      <label for="discovery-source">Discovery source</label>
+      <select id="discovery-source" aria-controls="discovery-list"><option value="">All sources</option></select>
+    </div>
+    <p class="meta" id="discovery-result-count" role="status" aria-live="polite">{{ tool_items|length }} of {{ tool_items|length }} discoveries shown</p>
+    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
+    <noscript><p class="meta">Filters require JavaScript; all discoveries are shown below.</p></noscript>
+    <ul class="items" id="discovery-list">
+      {% for item in tool_items %}
+      <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="item-source">{{ item.source }}</span></div>
+        <div class="item-desc">{{ item.summary }}</div>
+        <div class="item-source">ID: {{ item.id|default('not supplied', true) }} · Project types: {{ item.project_types|default([], true)|join(', ') or 'not supplied' }}</div>
+        <div class="item-source">Change: {{ item.change_type|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
+        {{ evidence_details(item.evidence|default([], true)) }}
+      </li>
+      {% else %}<li class="item empty-state">No discoveries supplied.</li>{% endfor %}
+    </ul>
+  </section>
+
+  <section class="tracker news" id="news" aria-label="AI news inventory">
     <div class="section-head"><span class="cmd">$ ai-news-tracker</span></div>
     <p class="meta">{{ news_items|length }} stories</p>
     <ul class="items">
       {% for item in news_items %}
       <li class="item">
         <div class="item-line">
-          <span class="item-name"><a href="{{ item.url }}">{{ item.headline }}</a></span>
+          <span class="item-name">{{ safe_link(item.url, item.headline) }}</span>
         </div>
         <div class="item-desc">{{ item.summary }} <span class="item-source">— {{ item.source }}</span></div>
       </li>
-      {% endfor %}
+      {% else %}<li class="item empty-state">No stories supplied.</li>{% endfor %}
     </ul>
   </section>
-  <!-- ===== end editable content ===== -->
 
-  <footer>generated by tracker-core on mira · {{ generated_at }}</footer>
+  <footer>generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
 
 </div>
+<script>
+(() => {
+  'use strict';
+  const section = document.getElementById('discoveries');
+  if (!section) return;
+  const rows = Array.from(section.querySelectorAll('.discovery-item'));
+  const search = document.getElementById('discovery-search');
+  const project = document.getElementById('discovery-project');
+  const source = document.getElementById('discovery-source');
+  const records = rows.map(row => ({
+    row,
+    text: row.textContent.toLowerCase(),
+    source: row.dataset.source,
+    types: JSON.parse(row.dataset.projectTypes)
+  }));
+  const addOptions = (select, values) => {
+    Array.from(new Set(values)).filter(Boolean).sort().forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+  };
+  addOptions(project, records.flatMap(record => record.types));
+  addOptions(source, records.map(record => record.source));
+  const applyFilters = () => {
+    const term = search.value.trim().toLowerCase();
+    let visible = 0;
+    records.forEach(record => {
+      const matches = record.text.includes(term) &&
+        (!project.value || record.types.includes(project.value)) &&
+        (!source.value || record.source === source.value);
+      record.row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    document.getElementById('discovery-result-count').textContent =
+      `${visible} of ${records.length} discoveries shown`;
+    document.getElementById('discovery-empty').hidden = visible > 0 || records.length === 0;
+  };
+  search.addEventListener('input', applyFilters);
+  project.addEventListener('change', applyFilters);
+  source.addEventListener('change', applyFilters);
+  applyFilters();
+})();
+</script>
 </body>
 </html>

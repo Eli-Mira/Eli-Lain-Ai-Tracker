@@ -20,6 +20,13 @@ reports/
 *.json
 !reports/.gitkeep
 
+# Regenerated each run, never committed
+public/
+
+# ...but dated verification evidence is tracked
+!docs/
+!docs/*.json
+
 # Env
 .env
 .env.local

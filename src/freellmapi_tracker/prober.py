@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from .models import FreeProvider, ProviderProbeResult, ProviderStatus
+from .models import FreeProvider, ProviderProbeResult, ProviderStatus, sanitize_evidence
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ DEFAULT_TEST_PAYLOAD = {
 }
 
 # Best lightweight model per platform for low-cost probing
-# Pulls from freellmapi DB — keys are platform strings from api_keys
+# Legacy suggestions only; probing requires membership in the current catalog.
 LIGHTWEIGHT_MODELS = {
     "cohere": "command-r-08-2024",          # c4ai-aya-expanse-32b works; command is faster
     "groq": "llama-3.1-8b-instant",
@@ -81,14 +81,15 @@ class AutoProber:
         base_url: str = "http://localhost:3001",
         api_key: str | None = None,
         timeout: float = 15.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+        model_catalog: dict[str, list[str]] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
-        # Use env var or default from freellmapi settings
-        self.api_key = api_key or os.getenv(
-            "FREELLMAPI_API_KEY",
-            "freellmapi-3ca5aa78c8e314ef2b93cc1d44874178c944a709c783b241"
-        )
+        # Unified client credential only; never fall back to a bundled secret.
+        self.api_key = api_key if api_key is not None else os.getenv("FREELLMAPI_API_KEY", "")
         self.timeout = timeout
+        self.transport = transport
+        self.model_catalog = model_catalog or {}
     
     async def probe_provider(
         self,
@@ -100,50 +101,79 @@ class AutoProber:
         Tries the primary model first; on 404 (model not in catalog)
         falls back to alternative models for that platform.
         """
-        # Build ordered candidate list: requested > provider config > platform default > fallbacks
-        candidates: list[str] = []
-        if model:
-            candidates.append(model)
-        if provider.probe_model and provider.probe_model != model:
-            candidates.append(provider.probe_model)
-        default_model = LIGHTWEIGHT_MODELS.get(provider.platform)
-        if default_model and default_model not in candidates:
-            candidates.append(default_model)
-        for fb in PLATFORM_FALLBACK_MODELS.get(provider.platform, []):
-            if fb not in candidates:
-                candidates.append(fb)
-
+        if provider.status == ProviderStatus.DISABLED or not provider.probe_enabled:
+            return ProviderProbeResult(provider.platform, False, "none", error_type="disabled",
+                                       response_category="disabled", error_message="Probing disabled")
+        if not self.api_key:
+            logger.warning("Unified router auth missing; provider keys are unverified")
+            return ProviderProbeResult(provider.platform, False, "none", error_type="config",
+                                       error_message="Configure unified router authentication",
+                                       response_category="router_auth")
+        category, status = "", None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.get(f"{self.base_url}/v1/models",
+                                            headers={"Authorization": f"Bearer {self.api_key}"})
+            status = response.status_code
+            if status in (401, 403):
+                category = "router_auth"
+            elif status != 200:
+                category = "router_error"
+            else:
+                catalog = response.json().get("data")
+                if not isinstance(catalog, list) or not all(isinstance(row, dict) and isinstance(row.get("id"), str) and isinstance(row.get("platforms", []), list) for row in catalog):
+                    category = "invalid_catalog"
+        except httpx.TimeoutException:
+            category = "timeout"
+        except httpx.RequestError:
+            category = "network"
+        except (ValueError, AttributeError, TypeError):
+            category = "invalid_catalog"
+        if category:
+            log = logger.warning if category in ("router_auth", "invalid_catalog") else logger.error
+            log("Router catalog unavailable (%s); provider keys remain unverified", category)
+            return ProviderProbeResult(provider.platform, False, "none", http_status=status,
+                error_type=category, response_category=category,
+                error_message="Router catalog unavailable; provider not verified",
+                evidence=[{"phase": "catalog", "http_status": status, "category": category}])
+        available = [row["id"] for row in catalog if row.get("owned_by") == provider.platform
+                     or provider.platform in row.get("platforms", [])]
+        listed = {row["id"] for row in catalog}  # Gateway health/cooldown flags are not inference proof.
+        for candidate in self.model_catalog.get(provider.platform, []):
+            if candidate in listed and candidate not in available:
+                available.append(candidate)
+        candidates = []
+        for candidate in (model, provider.probe_model, *available):
+            if candidate and self.api_key not in candidate and candidate in available and candidate not in candidates:
+                candidates.append(candidate)
         if not candidates:
-            return ProviderProbeResult(
-                provider_platform=provider.platform,
-                success=False,
-                model_tested="none",
-                error_type="config",
-                error_message=f"No test model configured for platform {provider.platform}",
-            )
-        
-        last_result: ProviderProbeResult | None = None
+            return ProviderProbeResult(provider.platform, False, "none", error_type="config",
+                                       error_message="No provider models in router catalog",
+                                       response_category="no_models")
+        attempted, evidence = [], []
         for candidate in candidates:
             result = await self._do_probe(candidate, provider.platform)
-            last_result = result
-            # 404 = model not in this provider's catalog — try next candidate
-            if result.http_status == 404:
-                continue
-            return result
-        
-        return last_result or ProviderProbeResult(
-            provider_platform=provider.platform,
-            success=False,
-            model_tested=candidates[0],
-            error_type="no_models",
-            error_message="All candidate models returned 404 (not in catalog)",
-        )
+            attempted.append(candidate)
+            result.error_message = sanitize_evidence(result.error_message, (self.api_key,))
+            result.evidence = sanitize_evidence(result.evidence, (self.api_key,))
+            if not result.evidence:
+                result.evidence = [{"model": candidate, "http_status": result.http_status}]
+            for item in result.evidence:
+                item.update(phase="completion", category=result.response_category,
+                            checked_at=result.checked_at.isoformat(), response_time_ms=result.response_time_ms)
+            evidence.extend(result.evidence)
+            result.attempted_models = list(attempted)
+            result.evidence = list(evidence)
+            if result.http_status != 404:
+                return result
+        return result
     
     async def _do_probe(self, test_model: str, platform: str) -> ProviderProbeResult:
         """Run a single probe request against freellmapi."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "X-FreeLLM-Cache": "off",
         }
         
         payload = {
@@ -155,7 +185,7 @@ class AutoProber:
         start_time = time.time()
         
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/chat/completions",
                     headers=headers,
@@ -166,6 +196,26 @@ class AutoProber:
                 
                 # Success
                 if response.status_code == 200:
+                    routed = response.headers.get("x-routed-via", "")
+                    category = ""
+                    if not routed:
+                        category = "route_unverified"
+                    elif routed.split("/", 1)[0] != platform:
+                        category = "route_mismatch"
+                    elif response.headers.get("x-freellm-cache", "").lower() == "hit":
+                        category = "cached_response"
+                    else:
+                        try:
+                            choices = response.json().get("choices")
+                            if not isinstance(choices, list) or not choices or not isinstance(choices[0].get("message"), dict):
+                                category = "invalid_response"
+                        except (ValueError, AttributeError, TypeError):
+                            category = "invalid_response"
+                    if category:
+                        return ProviderProbeResult(platform, False, test_model, http_status=200,
+                            error_type=category, response_category=category,
+                            error_message="Router response did not verify a fresh completion from this provider",
+                            evidence=[{"model": test_model, "http_status": 200, "routed_via": routed, "category": category}])
                     # Extract quota headers if present
                     remaining = self._extract_remaining(response.headers)
                     limit = self._extract_limit(response.headers)
@@ -176,6 +226,9 @@ class AutoProber:
                         success=True,
                         model_tested=test_model,
                         http_status=200,
+                        response_category="success",
+                        evidence=[{"model": test_model, "http_status": 200,
+                                   "routed_via": response.headers.get("x-routed-via", "")}],
                         remaining_quota=remaining,
                         quota_limit=limit,
                         quota_reset_at=reset_at,
@@ -185,32 +238,44 @@ class AutoProber:
                 # Handle errors
                 try:
                     err_json = response.json()
-                    err_msg = err_json.get("error", {}).get("message", response.text)
-                    err_type = err_json.get("error", {}).get("type", "unknown")
-                    err_code = err_json.get("error", {}).get("code", "")
+                    error = err_json.get("error", {})
+                    if isinstance(error, dict):
+                        err_msg = str(error.get("message", "Request rejected"))
+                        err_type = str(error.get("type", "unknown"))
+                        err_code = str(error.get("code", ""))
+                    else:
+                        err_msg, err_type, err_code = str(error), "unknown", ""
                 except Exception:
                     err_msg = response.text[:200]
                     err_type = "raw_error"
                     err_code = ""
                 
-                # Classify error type — ordered most-specific first
-                classified_type = "unknown"
-                msg_lower = err_msg.lower()
-                # Auth errors: explicit 401 or auth/invalid/expired key patterns (avoid bare "keys" in rate-limit text)
-                if response.status_code == 401 or any(kw in msg_lower for kw in ["invalid api key", "expired key", "authentication failed", "unauthorized", "api key not found", "invalid credentials"]):
+                # HTTP categories take precedence over incidental diagnostic words.
+                err_msg = sanitize_evidence(str(err_msg), (self.api_key,))
+                msg_lower = (err_msg + " " + err_code + " " + err_type).lower()
+                code = response.status_code
+                if code in (401, 403) and any(word in msg_lower for word in ("unified", "router auth", "missing bearer")):
+                    classified_type = "router_auth"
+                elif code in (401, 403):
                     classified_type = "auth"
-                elif response.status_code == 402 or any(kw in msg_lower for kw in ["credit", "payment", "billing", "insufficient quota", "usage limit"]):
-                    classified_type = "quota"
-                elif response.status_code == 429 or "rate" in err_msg.lower():
-                    classified_type = "rate_limit"
-                elif 500 <= response.status_code < 600:
+                elif 500 <= code < 600:
                     classified_type = "server_error"
+                elif code == 404:
+                    classified_type = "model_not_found"
+                elif code == 402 or any(word in msg_lower for word in ("insufficient_quota", "insufficient quota", "quota exhausted", "credits exhausted", "out of credits", "daily quota", "monthly quota")):
+                    classified_type = "quota"
+                elif code == 429:
+                    classified_type = "rate_limit"
+                else:
+                    classified_type = "unknown"
                 
                 return ProviderProbeResult(
                     provider_platform=platform,
                     success=False,
                     model_tested=test_model,
                     http_status=response.status_code,
+                    response_category=classified_type,
+                    evidence=[{"model": test_model, "http_status": response.status_code}],
                     error_type=classified_type,
                     error_message=err_msg[:300],
                     response_time_ms=duration_ms,
@@ -222,6 +287,7 @@ class AutoProber:
                 success=False,
                 model_tested=test_model,
                 error_type="timeout",
+                response_category="timeout",
                 error_message=f"Request timed out after {self.timeout}s",
                 response_time_ms=int((time.time() - start_time) * 1000),
             )
@@ -231,7 +297,8 @@ class AutoProber:
                 success=False,
                 model_tested=test_model,
                 error_type="network",
-                error_message=str(e)[:300],
+                response_category="network",
+                error_message="Network request failed; provider unverified",
                 response_time_ms=int((time.time() - start_time) * 1000),
             )
     
@@ -246,7 +313,7 @@ class AutoProber:
         sem = asyncio.Semaphore(concurrency)
         
         async def _probe_one(p: FreeProvider):
-            if not p.probe_enabled:
+            if not p.probe_enabled or p.status == ProviderStatus.DISABLED:
                 return
             async with sem:
                 await asyncio.sleep(delay_between)
@@ -254,7 +321,7 @@ class AutoProber:
                 res = await self.probe_provider(p)
                 results[p.platform] = res
         
-        tasks = [_probe_one(p) for p in providers if p.probe_enabled]
+        tasks = [_probe_one(p) for p in providers if p.probe_enabled and p.status != ProviderStatus.DISABLED]
         await asyncio.gather(*tasks, return_exceptions=True)
         
         return results

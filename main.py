@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
+import tempfile
 import os
 import sys
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,10 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from tracker_core.schema import NewsItem, SourceType
 from tracker_core.reporter_html import get_html_reporter
 from tracker_core.cache import FileCache
+from intel_sources.store import IntelStore, parse_time
+from intel_sources.decisions import provider_actions, provider_changes
+from intel_sources.catalogs import fetch_catalogs
+from intel_sources.tools import fetch_tools
 
 from news_tracker.adapters import get_all_adapters
 from news_tracker.dedup_filter import deduplicate_and_filter
@@ -64,6 +71,7 @@ class NewsTracker:
         theme: str = "lain",
         summarizer_config: dict[str, Any] | None = None,
         failure_threshold: int = 3,
+        source_timeout_seconds: float = 45.0,
         freellmapi_db_path: str | Path = r"C:\Users\emadg\freellmapi-docker\data\freeapi.db",
         freellmapi_url: str = "http://localhost:3001",
     ):
@@ -74,6 +82,7 @@ class NewsTracker:
         self.summarizer_config = summarizer_config or {}
         self.freellmapi_db_path = freellmapi_db_path
         self.freellmapi_url = freellmapi_url
+        self.source_timeout_seconds = source_timeout_seconds
 
         # Initialize components
         self.sqlite = SQLiteStore(self.data_dir / "news.db")
@@ -89,8 +98,16 @@ class NewsTracker:
         for name, h in persisted_health.items():
             health_record = self.health.get_or_create(name)
             health_record.consecutive_failures = h.get("consecutive_failures", 0)
-            health_record.is_disabled = h.get("is_disabled", False)
+            # Older SQLite rows have no cooldown deadline: never restore an
+            # indefinite disabled flag. JSON health state carries current deadlines.
+            health_record.is_disabled = False
             health_record.total_items = h.get("total_items", 0)
+            health_record.last_success = parse_time(h.get("last_success"))
+            health_record.last_failure = parse_time(h.get("last_failure"))
+        self.health.load_state()
+        self.feed_health = SourceHealthTracker(state_path=str(self.data_dir / "feed_health.json"))
+        self.feed_health.load_state()
+        self.feed_results: dict[str, dict[str, Any]] = {}
 
         # Notifier
         notif_config = {
@@ -120,6 +137,8 @@ class NewsTracker:
 
         # NEW: GitHub tool discovery
         self.tool_discovery = ProviderDiscovery()
+        self.intel_store = IntelStore(self.data_dir / "intel_state.json")
+        self.last_report_path: Path | None = None
 
     # ── Provider tracking methods ──────────────────────────────────────
 
@@ -134,23 +153,38 @@ class NewsTracker:
         prober = AutoProber(
             base_url=self.freellmapi_url,
             api_key=os.getenv("FREELLMAPI_API_KEY"),
+            model_catalog=self.provider_tracker.load_probe_catalog(),
         )
-        providers = [p for p in self.provider_tracker.providers.values() if p.probe_enabled]
+        previous = [p.to_dict() for p in self.provider_tracker.providers.values()]
+        providers = [p for p in self.provider_tracker.providers.values() if p.probe_enabled and p.status != ProviderStatus.DISABLED]
         results = await prober.probe_all(providers, concurrency=3)
 
         updated = 0
         for platform, result in results.items():
             provider = self.provider_tracker.providers.get(platform)
             if provider:
-                status, reason = result.to_status()
-                provider.status = status
-                provider.status_reason = reason
-                provider.last_verified = datetime.now(timezone.utc)
-                provider.last_verified_source = "probe"
-                provider.freellmapi_action = self._action_for(provider, result)
+                provider = self.provider_tracker.apply_probe_result(platform, result)
+                sanitized = result.to_dict()
+                provider.probe_evidence.append({key: sanitized[key] for key in (
+                    "attempted_models", "response_category", "checked_at", "probe_source",
+                    "error_message", "remaining_quota", "quota_limit", "quota_reset_at",
+                )})
                 updated += 1
 
         self.provider_tracker.save_state()
+        changes = provider_changes(previous, [p.to_dict() for p in self.provider_tracker.providers.values()])
+        path = self.data_dir / "provider_changes.json"
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump({"changes": changes}, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         logger.info(f"Probed {len(results)} providers, {updated} updated")
         return updated
 
@@ -194,69 +228,65 @@ class NewsTracker:
         return dashboards.get(platform, f"{platform}.com")
 
     def provider_status_rows(self) -> list[dict[str, Any]]:
-        """Build api_items-shaped rows from provider tracker."""
+        """Render current verdict separately from historical status and check age."""
         rows = []
         for p in self.provider_tracker.providers.values():
-            # Map our statuses to template classes
-            status_class = "stable"
-            if p.status == ProviderStatus.LIVE:
-                status_class = "new" if p.is_new else "stable"
-            elif p.status in (ProviderStatus.EXHAUSTED, ProviderStatus.PAYWALLED, ProviderStatus.BROKEN_KEY):
-                status_class = "dead"
-            elif p.status == ProviderStatus.DEGRADED:
-                status_class = "updated"
-            elif p.status == ProviderStatus.UNKNOWN:
-                status_class = "unknown"
-
-            desc_parts = []
+            snapshot = p.to_dict()
+            status = p.effective_status()
+            if not p.probe_source and status != ProviderStatus.DISABLED:
+                status = ProviderStatus.UNKNOWN
+            status_class = {
+                ProviderStatus.LIVE: "stable", ProviderStatus.DEGRADED: "updated",
+                ProviderStatus.BROKEN_KEY: "dead", ProviderStatus.EXHAUSTED: "dead",
+                ProviderStatus.PAYWALLED: "dead", ProviderStatus.UNKNOWN: "unknown",
+                ProviderStatus.DISABLED: "disabled",
+            }[status]
+            description = []
             if p.tier_details:
-                desc_parts.append(p.tier_details)
+                description.append("Registry tier (unverified): " + p.tier_details)
             if p.reset_schedule:
-                desc_parts.append(f"resets: {p.reset_schedule}")
-            if p.last_verified:
-                desc_parts.append(f"verified: {p.last_verified.strftime('%Y-%m-%d %H:%M')} UTC")
-            if p.freellmapi_action:
-                desc_parts.append(p.freellmapi_action)
-
+                description.append("Registry reset (unverified): " + p.reset_schedule)
+            description.append(snapshot["status_reason"] or "No provider-specific completion verdict")
+            if status == ProviderStatus.UNKNOWN:
+                description.append("Last-known status: " + p.status.value + "; not current availability proof")
             rows.append({
-                "name": p.name,
-                "status": status_class,
-                "description": " · ".join(desc_parts),
+                "name": p.name, "platform": p.platform, "status": status_class,
+                "actual_status": status.value, "last_known_status": p.status.value,
+                "description": " · ".join(description), "freshness": p.freshness(),
+                "checked_at": snapshot["checked_at"], "probe_source": p.probe_source,
+                "evidence": snapshot["probe_evidence"],
             })
-
-        # Sort: dead/exhausted first, then degraded, then live
-        priority = {"dead": 0, "updated": 1, "unknown": 2, "new": 3, "stable": 4}
-        rows.sort(key=lambda r: (priority.get(r["status"], 99), r["name"].lower()))
-        return rows
+        priority = {"dead": 0, "updated": 1, "unknown": 2, "stable": 3, "disabled": 4}
+        return sorted(rows, key=lambda r: (priority.get(r["status"], 99), r["name"].lower()))
 
     # ── GitHub tool discovery methods ──────────────────────────────────
 
     async def discover_tools(self) -> list[dict[str, Any]]:
-        """Discover relevant GitHub tools."""
-        tools = await self.tool_discovery.discover_github_tools()
-        rows = []
-        for t in tools[:15]:  # Limit to top 15
-            recency = ""
-            if t.last_push:
-                days = (datetime.now(timezone.utc) - t.last_push).days
-                if days <= 30:
-                    recency = f"pushed {days}d ago"
-                else:
-                    recency = f"last push {t.last_push.strftime('%Y-%m')}"
-            rows.append({
-                "headline": f"⭐ {t.stars} · {t.repo_name}",
-                "source": f"github ({t.category})",
-                "summary": f"{t.description} — {t.relevance_reason} {recency}".strip(),
-                "url": t.url,
-            })
-        return rows
+        """Refresh broad model/provider/skill/tool discovery, retaining failed-source cache."""
+        # A dedicated credential-free client prevents one source's auth leaking to another.
+        async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "EliLain-Intel/3"}) as client:
+            catalogs = await fetch_catalogs(
+                client, freellmapi_url=self.freellmapi_url,
+                api_key=os.getenv("FREELLMAPI_API_KEY") or None,
+                unorouter_api_key=os.getenv("UNOROUTER_API_KEY") or None,
+                include_local=os.getenv("GITHUB_ACTIONS") != "true",
+            )
+            tools = await fetch_tools(client, skills_token=os.getenv("VERCEL_OIDC_TOKEN") or None)
+        state = self.intel_store.update(
+            catalogs["items"] + tools["items"], catalogs["sources"] + tools["sources"],
+        )
+        return state["items"]
 
     # ── Existing news pipeline (unchanged) ─────────────────────────────
 
     async def fetch_all(self) -> list[NewsItem]:
         """Fetch news from all sources with circuit breaker."""
         logger.info("Fetching news from all sources...")
-        adapters = get_all_adapters()
+        adapters = get_all_adapters({
+            "feed_health_state_path": str(self.data_dir / "feed_health.json"),
+            "feed_health": self.feed_health,
+        })
+        self.feed_results = {}
         all_items: list[NewsItem] = []
 
         for adapter in adapters:
@@ -264,16 +294,28 @@ class NewsTracker:
                 logger.info(f"Skipping {adapter.name} (circuit broken)")
                 continue
             try:
-                items = await adapter.fetch_all()
-                if items:
+                items = await asyncio.wait_for(adapter.fetch_all(), timeout=self.source_timeout_seconds)
+                results = getattr(adapter, "feed_results", {})
+                if items or any(row.get("status") == "healthy" for row in results.values()):
                     all_items.extend(items)
                     self.health.record_success(adapter.name, len(items))
                 else:
                     self.health.record_failure(adapter.name, "Empty result")
+            except asyncio.TimeoutError:
+                message = f"Source collection timed out after {self.source_timeout_seconds}s; other sources continued"
+                logger.warning("%s: %s", adapter.name, message)
+                self.health.record_failure(adapter.name, message)
             except Exception as e:
-                logger.error(f"Failed to fetch from {adapter.name}: {e}")
-                self.health.record_failure(adapter.name, str(e))
+                logger.error("Failed to fetch from %s (%s)", adapter.name, type(e).__name__)
+                self.health.record_failure(adapter.name, type(e).__name__)
+            finally:
+                self.feed_results[adapter.name] = dict(getattr(adapter, "feed_results", {}))
 
+        try:
+            self.health.save_state()
+            self.feed_health.save_state()
+        except OSError:
+            logger.warning("Health state persistence failed; fetched observations retained")
         logger.info(f"Total fetched: {len(all_items)} items")
         for source_name in self.health._sources:
             source = self.health._sources[source_name]
@@ -345,7 +387,8 @@ class NewsTracker:
             "total_fetched": len(items),
             "breaking": len(breaking_items),
             "regular": len(regular_items),
-            "health_table": self.health.get_health_table(),
+            "health_table": self.get_health_table(),
+            "feed_health_table": self.get_feed_health_table(),
             **context,
         }
 
@@ -379,17 +422,53 @@ class NewsTracker:
                     "url": item.get("url", "#"),
                 })
 
+        intel = self.intel_store.read()
+        tool_items = [dict(item, evidence=[item["evidence"]] if isinstance(item.get("evidence"), dict) else item.get("evidence", [])) for item in intel["items"]] if include_tools else []
+        change_items = intel["changes"] if include_tools else []
+        source_items = intel["sources"] if include_tools else []
+        if include_providers:
+            path = self.data_dir / "provider_changes.json"
+            if path.exists():
+                now = datetime.now(timezone.utc)
+                for change in json.loads(path.read_text(encoding="utf-8")).get("changes", []):
+                    checked = parse_time(change.get("checked_at"))
+                    if checked and 0 <= (now - checked).total_seconds() <= 24 * 3600:
+                        change_items = [change, *change_items]
         output_path = output_path or self.reports_dir / f"eli-lain_{run_date.strftime('%Y%m%d_%H%M%S')}.html"
+        recommendations: dict[str, Any] = {}
+        if include_tools:
+            # Advisory metadata-only views; never replace the broad inventory.
+            from intel_sources.recommendations import evaluate_projects
+            evaluated = evaluate_projects(intel["items"], now=datetime.now(timezone.utc))
+            reviewed = {entry["id"] for group in evaluated["groups"].values()
+                        for name in ("shortlist", "deferred", "excluded") for entry in group[name]}
+            recommendations = {
+                "recommendation_groups": evaluated["groups"],
+                "recommendation_coverage": {
+                    "reviewed_count": len(reviewed),
+                    "discovery_count": evaluated["coverage"]["discovery_count"],
+                    "inventory_count": evaluated["inventory_count"],
+                    "shortlist_limit_per_project": evaluated["coverage"]["shortlist_limit_per_project"],
+                },
+            }
         html = self.reporter.render(
             api_items=api_items,
             news_items=news_items,
             report_date=run_date.strftime("%Y-%m-%d"),
             generated_at=datetime.now(timezone.utc).strftime("%H:%M UTC"),
             persona_image_url=None,
+            tool_items=tool_items,
+            change_items=change_items,
+            source_items=source_items,
+            action_items=provider_actions([p.to_dict() for p in self.provider_tracker.providers.values()]) if include_providers else [],
+            baseline=intel["baseline"],
+            runtime_source="GitHub Actions" if os.getenv("GITHUB_ACTIONS") == "true" else "Mira (local)",
+            **recommendations,
         )
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text(html, encoding="utf-8")
+        self.last_report_path = Path(output_path)
         logger.info(f"Report saved to {output_path}")
         return html
 
@@ -402,7 +481,23 @@ class NewsTracker:
         return self.sqlite.get_weekly_summary(weeks=weeks)
 
     def get_health_table(self) -> list[dict[str, Any]]:
-        return self.health.get_health_table()
+        rows = self.health.get_health_table()
+        for row in rows:
+            results = self.feed_results.get(row["source"], {})
+            counts: dict[str, int] = {}
+            for result in results.values():
+                status = result.get("status", "unknown")
+                counts[status] = counts.get(status, 0) + 1
+            row["feed_status_counts"] = counts
+            row["feed_count"] = len(results)
+            if counts.get("healthy") and any(status != "healthy" for status in counts):
+                row["status"] = "partial"
+            elif counts and not counts.get("healthy"):
+                row["status"] = "failed" if counts.get("failed") else "cooldown" if counts.get("cooldown") else "not_attempted"
+        return rows
+
+    def get_feed_health_table(self) -> list[dict[str, Any]]:
+        return self.feed_health.get_health_table()
 
 
 async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
@@ -413,7 +508,7 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     print(f"      Loaded {count} providers")
 
     # Step 2: probe (skip in CI — freellmapi runs locally on Mira, not on GitHub runners)
-    prev_statuses = {p.platform: p.status.value for p in tracker.provider_tracker.providers.values()}
+    previous = [p.to_dict() for p in tracker.provider_tracker.providers.values()]
     if os.getenv("GITHUB_ACTIONS") == "true":
         print(f"[2/4] Skipping probes (CI environment — freellmapi is local-only). Using persisted state.")
         probed = 0
@@ -422,21 +517,17 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
         probed = await tracker.probe_providers()
         print(f"      Probed and updated {probed} providers")
 
-    print(f"[3/4] Discovering GitHub tools...")
+    print("[3/4] Discovering models, providers, skills and trending tools...")
     tools = await tracker.discover_tools()
     print(f"      Found {len(tools)} candidate tools")
 
     print(f"[4/4] Generating HTML report...")
-    report_path = tracker.generate_report(include_providers=True, include_news=False, include_tools=False)
+    tracker.generate_report(include_providers=True, include_news=True, include_tools=True)
+    report_path = tracker.last_report_path
     print(f"      Report: {report_path}")
 
-    # Compute status changes (compare post-probe against pre-probe snapshot)
-    changes = []
-    for p in tracker.provider_tracker.providers.values():
-        old = prev_statuses.get(p.platform)
-        new = p.status.value if p.status else "unknown"
-        if old != new:
-            changes.append(f"{p.name}: {old} → {new}")
+    # Notify only newly observed probe changes, never replay history in CI.
+    changes = provider_changes(previous, [p.to_dict() for p in tracker.provider_tracker.providers.values()]) if probed else []
 
     # Show the provider table inline
     print("\n--- Provider Status ---")
@@ -453,7 +544,7 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
 
     # Status-change notification (minimalist)
     if changes:
-        msg = "\n".join(f"  • {c}" for c in changes[:8])
+        msg = "\n".join("  • " + c["headline"] for c in changes[:8])
         try:
             await tracker.notifier.send(f"⚡ EliLain status change:\n{msg}")
         except Exception as e:
@@ -468,14 +559,14 @@ async def async_full_audit(tracker: NewsTracker) -> dict[str, Any]:
     }
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Eli-Lain AI Tracker — v2")
     parser.add_argument(
         "action",
         choices=["run", "report", "list", "today", "health", "summary",
-                  "providers", "probe", "discover", "audit"],
+                  "providers", "probe", "discover", "audit", "export-public", "publish"],
         help="Action to perform",
     )
     parser.add_argument("--theme", choices=["default", "lain"], default="lain", help="Report theme")
@@ -485,8 +576,12 @@ def main():
     parser.add_argument("--reports-dir", default="./reports")
     parser.add_argument("--freellmapi-db", default=r"C:\Users\emadg\freellmapi-docker\data\freeapi.db")
     parser.add_argument("--freellmapi-url", default="http://localhost:3001")
+    parser.add_argument("--public-dir", default="./public",
+                        help="Directory holding the sanitized public index.html export")
+    parser.add_argument("--no-export", action="store_true",
+                        help="Skip rebuilding the sanitized export before publishing")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
@@ -548,12 +643,13 @@ def main():
     elif args.action == "providers":
         count = tracker.load_providers()
         print(f"\nLoaded {count} providers from freellmapi DB\n")
-        print(f"{'Name':<16} {'Status':<12} {'Tier':<24} {'Action'}")
+        print(f"{'Name':<16} {'Current status':<14} {'Freshness':<12} {'Detail'}")
         print("-" * 80)
-        for p in sorted(tracker.provider_tracker.providers.values(), key=lambda x: x.name):
-            tier = p.tier_type.value if p.tier_type else "?"
-            action = (p.freellmapi_action or "")[:50]
-            print(f"{p.name:<16} [{p.status.value:<10}] {tier:<24} {action}")
+        for row in tracker.provider_status_rows():
+            print(f"{row['name']:<16} [{row['actual_status']:<10}] {row['freshness']:<12} {row['description'][:100]}")
+        print("\n--- Next actions ---")
+        for action in provider_actions([p.to_dict() for p in tracker.provider_tracker.providers.values()]):
+            print(f"[{action['priority']}] {action['title']}: {action['action']}")
 
     elif args.action == "probe":
         tracker.load_providers()
@@ -568,7 +664,7 @@ def main():
 
     elif args.action == "discover":
         tools = asyncio.run(tracker.discover_tools())
-        print(f"\nDiscovered {len(tools)} GitHub tools\n")
+        print(f"\nObserved {len(tools)} model/provider/skill/repository discoveries (see source coverage in report)\n")
         for t in tools:
             print(f"  ⭐ {t['headline']}")
             print(f"     {t['summary'][:90]}")
@@ -577,6 +673,43 @@ def main():
     elif args.action == "audit":
         asyncio.run(async_full_audit(tracker))
 
+    elif args.action == "export-public":
+        # Saved internal inputs only: no fetching, no deployment, no notification.
+        import hashlib
+        from intel_sources.public_report import export_public_report
+        try:
+            artifact = export_public_report(Path(args.data_dir) / "intel_state.json",
+                                            Path(args.data_dir) / "news.db", args.public_dir)
+        except (OSError, ValueError, TypeError):
+            print("export-public failed: saved inputs or export directory were rejected", file=sys.stderr)
+            return 1
+        data = artifact.read_bytes()
+        print(json.dumps({"artifact": str(artifact), "sha256": hashlib.sha256(data).hexdigest(),
+                          "bytes": len(data)}, sort_keys=True))
+        return 0
+
+    elif args.action == "publish":
+        # Hosting and both notification channels; exits non-zero unless fully verified.
+        if not args.no_export:
+            if main(["export-public", "--data-dir", args.data_dir,
+                     "--public-dir", args.public_dir, "--theme", args.theme]):
+                return 1
+        from intel_sources.report_delivery import DeliveryError, deliver_report
+        try:
+            result = deliver_report(args.public_dir)
+        except DeliveryError as error:
+            # Report the safe code only; never echo tokens, hosts internals or paths.
+            print(json.dumps({"delivered": False, "code": error.code}, sort_keys=True), file=sys.stderr)
+            return 1
+        print(json.dumps({
+            "delivered": result.success,
+            "url": result.hosted.url,
+            "sha256": result.hosted.sha256,
+            "telegram": result.telegram.confirmation,
+            "discord": result.discord.confirmation,
+        }, sort_keys=True))
+        return 0 if result.success else 1
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

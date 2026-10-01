@@ -2,10 +2,60 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+import re
+from urllib.parse import urlsplit
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
+
+
+def aware_utc(value: datetime | str | None) -> datetime | None:
+    """Legacy naive timestamps were UTC; never replace a missing time with now."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def sanitize_evidence(value: Any, secrets: tuple[str, ...] = ()) -> Any:
+    """Recursively produce JSON-safe evidence without credentials or secret URLs."""
+    if isinstance(value, dict):
+        sensitive = {"authorization", "proxy_authorization", "api_key", "apikey", "key",
+                     "password", "token", "access_token", "refresh_token", "secret", "credential", "credentials"}
+        return {str(k): "[REDACTED]" if str(k).lower().replace("-", "_") in sensitive
+                or str(k).lower().replace("-", "_").endswith(("_api_key", "_password", "_secret", "_token"))
+                else sanitize_evidence(v, secrets) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_evidence(v, secrets) for v in value]
+    if isinstance(value, datetime):
+        return aware_utc(value).isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[REDACTED]")
+        value = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[^\s,;\"']+", "Bearer [REDACTED]", value)
+        value = re.sub(r"(?i)\b(?:sk-|gsk_|hf_|freellmapi-)[A-Za-z0-9_-]+", "[REDACTED]", value)
+        value = re.sub(r"(?i)(api[_-]?key|token|password|secret|authorization)\s*[=:]\s*[^\s,;\"']+", r"\1=[REDACTED]", value)
+        def redact_url(match):
+            url = match.group(0)
+            try:
+                parts = urlsplit(url)
+            except ValueError:
+                return "[REDACTED_URL]"
+            return "[REDACTED_URL]" if parts.query or parts.fragment or parts.username else url
+        return re.sub(r"https?://[^\s\"'<>]+", redact_url, value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return "[UNSUPPORTED]"
 
 
 class ProviderStatus(Enum):
@@ -85,10 +135,35 @@ class FreeProvider:
     # Metadata
     notes: str = ""
     tags: list[str] = field(default_factory=list)
-    
+
+    checked_at: datetime | None = None
+    probe_source: str = ""
+    probe_evidence: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.checked_at = aware_utc(self.checked_at)
+        self.last_verified = aware_utc(self.last_verified)
+        self.discovery_date = aware_utc(self.discovery_date)
+
+    def freshness(self, now: datetime | None = None, max_age_hours: float = 24) -> str:
+        """Report observation age, without inventing a verification time."""
+        if self.checked_at is None:
+            return "unverified"
+        checked = self.checked_at.replace(tzinfo=timezone.utc) if self.checked_at.tzinfo is None else self.checked_at
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age = (current - checked).total_seconds()
+        return "fresh" if 0 <= age <= max_age_hours * 3600 else "stale"
+
+    def effective_status(self, now: datetime | None = None, max_age_hours: float = 24) -> ProviderStatus:
+        if self.status == ProviderStatus.DISABLED:
+            return ProviderStatus.DISABLED
+        return self.status if self.freshness(now, max_age_hours) == "fresh" else ProviderStatus.UNKNOWN
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization."""
-        return {
+        return sanitize_evidence({
             "name": self.name,
             "platform": self.platform,
             "tier_type": self.tier_type.value,
@@ -98,6 +173,9 @@ class FreeProvider:
             "status_reason": self.status_reason,
             "last_verified": self.last_verified.isoformat() if self.last_verified else None,
             "last_verified_source": self.last_verified_source,
+            "checked_at": self.checked_at.isoformat() if self.checked_at else None,
+            "probe_source": self.probe_source,
+            "probe_evidence": self.probe_evidence,
             "freellmapi_key_id": self.freellmapi_key_id,
             "freellmapi_integration": self.freellmapi_integration.value,
             "freellmapi_action": self.freellmapi_action,
@@ -112,16 +190,19 @@ class FreeProvider:
             "probe_cost_estimate": self.probe_cost_estimate,
             "notes": self.notes,
             "tags": self.tags,
-        }
+        })
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FreeProvider:
         """Create from dict."""
-        # Convert datetime strings back
-        if data.get("last_verified"):
-            data["last_verified"] = datetime.fromisoformat(data["last_verified"])
-        if data.get("discovery_date"):
-            data["discovery_date"] = datetime.fromisoformat(data["discovery_date"])
+        data = dict(data)
+        for name in ("last_verified", "checked_at", "discovery_date"):
+            if name in data:
+                data[name] = aware_utc(data[name])
+        # Old real probes have a usable alias; gateway health pings do not.
+        if "checked_at" not in data and data.get("last_verified_source") in ("probe", "local:freellmapi"):
+            data["checked_at"] = data.get("last_verified")
+            data.setdefault("probe_source", "local:freellmapi")
         # Convert enums
         data["tier_type"] = ProviderTier(data.get("tier_type", "unknown"))
         data["status"] = ProviderStatus(data.get("status", "unknown"))
@@ -143,25 +224,42 @@ class ProviderProbeResult:
     quota_limit: int | None = None
     quota_reset_at: str | None = None
     response_time_ms: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    checked_at: datetime | None = None
+    probe_source: str = "local:freellmapi"
+    attempted_models: list[str] = field(default_factory=list)
+    response_category: str = ""
+    evidence: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.checked_at = aware_utc(self.checked_at or self.timestamp)
+        self.timestamp = self.checked_at
+
+    def to_dict(self) -> dict[str, Any]:
+        return sanitize_evidence(asdict(self))
     
     def to_status(self) -> tuple[ProviderStatus, str]:
         """Convert probe result to provider status + reason."""
+        message = sanitize_evidence(self.error_message)
+        if self.error_type == "disabled":
+            return ProviderStatus.DISABLED, "Probing disabled"
         if self.success:
             if self.remaining_quota is not None and self.remaining_quota == 0:
                 return ProviderStatus.EXHAUSTED, "Quota exhausted (0 remaining)"
             return ProviderStatus.LIVE, "Probe successful"
         
-        if self.http_status == 401 or self.error_type == "auth":
-            return ProviderStatus.BROKEN_KEY, self.error_message or "Authentication failed (401)"
+        if self.error_type in ("router_auth", "config", "network", "timeout", "router_error", "model_not_found"):
+            return ProviderStatus.UNKNOWN, message or "Provider unverified"
+        if self.http_status in (401, 403) or self.error_type == "auth":
+            return ProviderStatus.BROKEN_KEY, message or "Authentication failed (401)"
         if self.http_status == 402 or self.error_type == "quota":
-            return ProviderStatus.EXHAUSTED, self.error_message or "Quota/credits exhausted"
+            return ProviderStatus.EXHAUSTED, message or "Quota/credits exhausted"
         if self.http_status == 429 or self.error_type == "rate_limit":
-            return ProviderStatus.DEGRADED, self.error_message or "Rate limited"
+            return ProviderStatus.DEGRADED, message or "Rate limited"
         if self.http_status and 500 <= self.http_status < 600:
             return ProviderStatus.DEGRADED, f"Server error ({self.http_status})"
         
-        return ProviderStatus.UNKNOWN, self.error_message or "Unknown error"
+        return ProviderStatus.UNKNOWN, message or "Unknown error"
 
 
 @dataclass

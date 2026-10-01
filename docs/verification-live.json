@@ -1,0 +1,170 @@
+{
+  "verified_at": "2026-09-30T14:31:23.769746+00:00",
+  "audit": {
+    "verification_mode": "saved_observation_readback",
+    "providers_loaded": 28,
+    "report": "C:\\tmp\\eli-lain-tracker\\reports\\eli-lain_20260930_143122.html"
+  },
+  "report_sha256": "91782ddca85ba5fefe1528a7c8a7d4f86e93379b65398fdf3449691cfa59f2d0",
+  "total_inventory": 1772,
+  "observed_inventory": 1767,
+  "source_counts": {
+    "openrouter-models": 635,
+    "openrouter-providers": 112,
+    "unorouter-models": 237,
+    "freellmapi-models": 280,
+    "skills-sh": 454,
+    "github-trending": 49
+  },
+  "sources": [
+    {
+      "name": "openrouter-models",
+      "status": "ok",
+      "checked_at": "2026-09-30T14:04:04.769235+00:00",
+      "item_count": 635,
+      "error": null,
+      "url": "https://openrouter.ai/api/v1/models"
+    },
+    {
+      "name": "openrouter-providers",
+      "status": "ok",
+      "checked_at": "2026-09-30T14:04:04.818373+00:00",
+      "item_count": 112,
+      "error": null,
+      "url": "https://openrouter.ai/api/v1/providers"
+    },
+    {
+      "name": "unorouter-models",
+      "status": "ok",
+      "checked_at": "2026-09-30T14:04:05.134525+00:00",
+      "item_count": 237,
+      "error": null,
+      "url": "https://api.unorouter.com/api/pricing/catalog"
+    },
+    {
+      "name": "freellmapi-models",
+      "status": "ok",
+      "checked_at": "2026-09-30T14:04:05.387946+00:00",
+      "item_count": 280,
+      "error": null,
+      "url": "http://localhost:3001/v1/models"
+    },
+    {
+      "name": "skills-sh",
+      "status": "partial",
+      "checked_at": "2026-09-30T14:04:05.492681+00:00",
+      "item_count": 454,
+      "error": null,
+      "url": "https://skills.sh/",
+      "coverage": {
+        "mode": "public-html",
+        "scope": "All rows in the three public rendered leaderboards only; unrendered/paginated catalog not scanned.",
+        "views": {
+          "all-time": {
+            "url": "https://skills.sh/",
+            "status": "ok",
+            "rendered_rows": 183,
+            "error": null
+          },
+          "trending": {
+            "url": "https://skills.sh/trending",
+            "status": "ok",
+            "rendered_rows": 175,
+            "error": null
+          },
+          "hot": {
+            "url": "https://skills.sh/hot",
+            "status": "ok",
+            "rendered_rows": 178,
+            "error": null
+          }
+        },
+        "metadata": {
+          "budget": 40,
+          "attempted": 40,
+          "enriched": 40,
+          "errors": 0,
+          "not_scanned": 414,
+          "scope": "Bounded public skill detail meta descriptions and topics; no scripts, prompts, or external URLs followed."
+        }
+      }
+    },
+    {
+      "name": "github-trending",
+      "status": "ok",
+      "checked_at": "2026-09-30T14:04:13.813647+00:00",
+      "item_count": 49,
+      "error": null,
+      "url": "https://github.com/trending",
+      "coverage": {
+        "scope": "All repositories rendered on each requested GitHub Trending period page; not all GitHub.",
+        "periods": {
+          "daily": {
+            "url": "https://github.com/trending?since=daily",
+            "status": "ok",
+            "item_count": 17,
+            "error": null
+          },
+          "weekly": {
+            "url": "https://github.com/trending?since=weekly",
+            "status": "ok",
+            "item_count": 18,
+            "error": null
+          },
+          "monthly": {
+            "url": "https://github.com/trending?since=monthly",
+            "status": "ok",
+            "item_count": 23,
+            "error": null
+          }
+        }
+      }
+    }
+  ],
+  "discovery_changes": 10,
+  "provider_statuses": {
+    "live": 6,
+    "unknown": 21,
+    "degraded": 1
+  },
+  "provider_attempted": 8,
+  "provider_categories": {
+    "success": 6,
+    "no_models": 20,
+    "route_mismatch": 1,
+    "server_error": 1
+  },
+  "live_routes": [
+    "cohere",
+    "groq",
+    "mistral",
+    "zhipu",
+    "agnes",
+    "google"
+  ],
+  "news_rendered": 100,
+  "browser": [
+    {
+      "viewport": [
+        1440,
+        1000
+      ],
+      "errors": [],
+      "filters": true,
+      "evidence_expands": true,
+      "no_horizontal_overflow": true,
+      "screenshot": "C:\\Users\\emadg\\AppData\\Local\\hermes\\cache\\scratch\\elilain-1440.png"
+    },
+    {
+      "viewport": [
+        390,
+        844
+      ],
+      "errors": [],
+      "filters": true,
+      "evidence_expands": true,
+      "no_horizontal_overflow": true,
+      "screenshot": "C:\\Users\\emadg\\AppData\\Local\\hermes\\cache\\scratch\\elilain-390.png"
+    }
+  ]
+}
