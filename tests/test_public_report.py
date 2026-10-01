@@ -368,6 +368,7 @@ def public_browser():
 @pytest.mark.parametrize("width", [360, 390, 768, 1440])
 def test_real_chromium_public_html_is_offline_safe_responsive_and_filters_work(public_browser, tmp_path, width):
     import json
+    from playwright.sync_api import expect
     state = state_fixture()
     state["items"] = [public_row(headline='<script>window.pwned=1</script>'),
                       public_row(source="github-trending", id="github:org/repo", url="https://github.com/Org/Repo", headline="Public Repo", project_types=["agents"])]
@@ -387,7 +388,9 @@ def test_real_chromium_public_html_is_offline_safe_responsive_and_filters_work(p
         assert page.locator('.discovery-item:visible').count() == 0
         page.locator('#discovery-inventory > summary').click()
         assert page.locator('.discovery-item:visible').count() == 2
-        assert page.locator('#discovery-result-count').text_content() == "2 discoveries, no filter applied"
+        # Native toggles update .open before the queued callback rewrites status.
+        # Keep the exact expected value, but wait for that callback to complete.
+        expect(page.locator('#discovery-result-count')).to_have_text("2 discoveries, no filter applied")
         assert page.evaluate("window.pwned || false") is False
         assert page.locator("img, [onerror], iframe, script[src], link[rel=stylesheet]").count() == 0
         assert "PRIVATE_" not in page.locator("body").inner_text()
