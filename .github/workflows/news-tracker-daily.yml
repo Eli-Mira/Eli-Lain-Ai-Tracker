@@ -95,11 +95,13 @@ jobs:
           path: public/index.html
           retention-days: 14
 
-      # Hosting and both channel posts stay opt-in: they need NETLIFY_* secrets
-      # that are not configured yet, and never run against an unverified artifact.
-      # Every value below is a GitHub-generated secret name, not event text.
-      - name: Publish export and notify (requires NETLIFY secrets)
-        if: ${{ secrets.NETLIFY_AUTH_TOKEN != '' && secrets.NETLIFY_SITE_ID != '' }}
+      # Hosting and both channel posts stay opt-in. A repository variable gates
+      # this step because the `secrets` context is not available in a step-level
+      # `if`; GitHub rejects the whole workflow file when it is used there.
+      # Secrets reach the process through env only, never argv, and no event
+      # text is ever interpolated into a run block.
+      - name: Publish export and notify (opt-in via PUBLISH_ENABLED)
+        if: ${{ vars.PUBLISH_ENABLED == 'true' }}
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
