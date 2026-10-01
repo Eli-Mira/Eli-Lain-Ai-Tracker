@@ -298,7 +298,12 @@ class _Session:
             sleep(interval)
         else:
             raise DeliveryError("deploy_not_ready")
-        url = status["deploy_ssl_url"].rstrip("/") + "/"
+        # Verify the canonical published URL, not the per-deploy alias:
+        # Netlify answers 401 for `<deploy-id>--site.netlify.app` on a team site
+        # even with no password protection, so reading back the alias turned a
+        # successful deploy into an HTTP failure. `ssl_url` is the published
+        # origin; the deploy id is checked above, so this is the same bytes.
+        url = status["ssl_url"].rstrip("/") + "/"
         host = urlsplit(url).hostname
         if not host or not host.endswith(".netlify.app"):
             raise DeliveryError("unsafe_url")

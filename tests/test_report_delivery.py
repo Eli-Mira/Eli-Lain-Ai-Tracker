@@ -12,7 +12,12 @@ import pytest
 
 SITE = "3970e0fe-8564-4903-9a55-c5f8de49fb8b"
 DEPLOY = "abc123"
-URL = "https://abc123--report-fixture.netlify.app/"
+URL = "https://report-fixture.netlify.app/"
+URL_HOST = "report-fixture.netlify.app"
+# Netlify answers 401 for this per-deploy alias on a team site, so the canonical
+# ssl_url above is what must be read back. The real deploy payload carries both.
+ALIAS = "https://abc123--report-fixture.netlify.app/"
+ALIAS_HOST = "abc123--report-fixture.netlify.app"
 ENV = {
     "NETLIFY_AUTH_TOKEN": "test-netlify-token",
     "NETLIFY_SITE_ID": SITE,
@@ -78,8 +83,9 @@ class Protocol:
                 return httpx.Response(200, json={"path": "/index.html"})
             if request.method == "GET" and path == f"/api/v1/deploys/{DEPLOY}":
                 return httpx.Response(200, json={"id": DEPLOY, "site_id": SITE, "state": "ready",
-                                              "deploy_ssl_url": URL.rstrip("/")})
-        if host == "abc123--report-fixture.netlify.app":
+                                              "ssl_url": URL.rstrip("/"),
+                                              "deploy_ssl_url": ALIAS.rstrip("/")})
+        if host in (URL_HOST, ALIAS_HOST):
             assert request.method == "GET" and path == "/"
             assert "authorization" not in request.headers
             assert "cookie" not in request.headers
@@ -148,7 +154,7 @@ def test_unexpected_files_in_export_directory_fail_closed(artifact_dir, tmp_path
 
 def test_deployed_html_mismatch_stops_before_any_notification(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
-    protocol = Guard(data, lambda r: r.headers["host"] == "abc123--report-fixture.netlify.app"
+    protocol = Guard(data, lambda r: r.headers["host"] == URL_HOST
                      and httpx.Response(200, content=data + b"<!-- tampered -->"))
     with pytest.raises(module().DeliveryError) as caught:
         run(artifact_dir, protocol)
@@ -159,7 +165,7 @@ def test_deployed_html_mismatch_stops_before_any_notification(artifact_dir):
 
 def test_redirecting_hosted_url_is_not_followed(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
-    protocol = Guard(data, lambda r: r.headers["host"] == "abc123--report-fixture.netlify.app"
+    protocol = Guard(data, lambda r: r.headers["host"] == URL_HOST
                      and httpx.Response(302, headers={"location": "https://example.com/"}))
     with pytest.raises(module().DeliveryError) as caught:
         run(artifact_dir, protocol)
@@ -170,7 +176,7 @@ def test_private_or_foreign_hosted_url_is_rejected(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
     protocol = Guard(data, lambda r: r.url.path == "/api/v1/deploys/" + DEPLOY
                      and httpx.Response(200, json={"id": DEPLOY, "site_id": SITE, "state": "ready",
-                                                   "deploy_ssl_url": "https://evil.example.com/"}))
+                                                   "ssl_url": "https://evil.example.com/"}))
     with pytest.raises(module().DeliveryError) as caught:
         run(artifact_dir, protocol)
     assert caught.value.code == "unsafe_url"
@@ -250,7 +256,7 @@ def test_secrets_never_appear_in_errors_or_receipts(artifact_dir, caplog):
 
 def test_oversized_hosted_response_is_refused(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
-    protocol = Guard(data, lambda r: r.headers["host"] == "abc123--report-fixture.netlify.app"
+    protocol = Guard(data, lambda r: r.headers["host"] == URL_HOST
                      and httpx.Response(200, content=b"x" * (4 * 1024 * 1024 + 1)))
     with pytest.raises(module().DeliveryError) as caught:
         run(artifact_dir, protocol)
@@ -337,7 +343,7 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert "not a fresh fetch" in result.brief
     assert URL in result.brief
     assert [r.headers["host"] for r in protocol.calls] == ["api.netlify.com"] * 4 + [
-        "abc123--report-fixture.netlify.app", "api.telegram.org", "discord.com", "discord.com"]
+        URL_HOST, "api.telegram.org", "discord.com", "discord.com"]
     assert (artifact_dir / "index.html").read_bytes() == data
 
 
@@ -510,3 +516,69 @@ def test_pinned_address_prefers_reachable_ipv4_and_reports_families():
     with pytest.raises(DeliveryError) as caught:
         unsafe.handle_request(httpx.Request("GET", "https://api.netlify.com/api/v1/user"))
     assert caught.value.code == "unsafe_dns"
+
+
+def test_hosted_readback_uses_the_canonical_site_url_not_the_deploy_url():
+    """Verify the URL that is actually published, not the per-deploy alias.
+
+    Netlify answers 401 for the `<deploy-id>--site.netlify.app` alias on a
+    team site even with no password protection, while the canonical
+    `ssl_url` serves the same published bytes publicly. Reading back the
+    alias meant a successful deploy was reported as an HTTP failure.
+    """
+    import httpx
+
+    from intel_sources.report_delivery import DeliveryConfig, _Session
+
+    body = b"<html>published bytes</html>"
+    requested = []
+
+    class Response:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_bytes(self):
+            return iter([body])
+
+    class Client:
+        def stream(self, method, url, **kwargs):
+            requested.append(url)
+            return Response()
+
+    config = DeliveryConfig(netlify_token="t", site_id="s", telegram_token="tg",
+                            telegram_chat_id="1", discord_token="d", discord_channel_id="2")
+    transport = type("T", (), {"allowed_hosts": set()})()
+    session = _Session(config, transport, Client())
+
+    deploy = {
+        "id": "dep1",
+        "site_id": "s",
+        "state": "ready",
+        "required": [],
+        # The per-deploy alias answers 401; the canonical URL is what is published.
+        "ssl_url": "https://eli-lain-intel.netlify.app",
+        "deploy_ssl_url": "https://dep1--eli-lain-intel.netlify.app",
+    }
+
+    def fake_netlify(method, path, **kwargs):
+        if method == "GET" and path.startswith("/sites/"):
+            return {"id": "s"}
+        if method == "POST":
+            return deploy
+        return deploy
+
+    session.netlify = fake_netlify
+
+    class Artifact:
+        data = body
+        sha1 = "sha1"
+        sha256 = __import__("hashlib").sha256(body).hexdigest()
+
+    hosted = session.host(Artifact(), 2, 0.0, lambda seconds: None)
+    assert hosted.url == "https://eli-lain-intel.netlify.app/"
+    assert any("dep1--" not in url for url in requested)
