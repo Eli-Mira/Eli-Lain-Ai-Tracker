@@ -23,9 +23,11 @@ reports/
 # Regenerated each run, never committed
 public/
 
-# ...but dated verification evidence is tracked
+# ...but dated verification evidence and generated test fixtures are tracked
 !docs/
 !docs/*.json
+!tests/fixtures/
+!tests/fixtures/*.json
 
 # Env
 .env
