@@ -1,6 +1,10 @@
 # Release template / public-consumer audit
 
-## Outcome
+## Latest parent verification — October 2, 2026 (Cairo)
+
+The historical audit below is preserved; its no-deployment statement applies only to that original subtask. Decision-first runtime `e62b0faf3938ca7d6fe9e35dcbaa8420640513b3` and test-only follow-up `8ee2bd8730fb89759feac441efb5834809557c36` are now reviewed/pushed/hosted through successful CI **36933189703**. Actual Pages equals the CI export (**3,294,609 bytes**, SHA256 `e5d5f04b432bfd6cbaca89a4e69091f8451b9b04848e1dd5cd392395a6a93e44`); **102 offline Chromium checks / zero failures**, exact attachment receipts on both channels, unchanged locked original style. The public shortlist now starts the report, internal shortlist precedes inventory, and the public **2,281-row** catalog is collapsed initially but fully reachable. Current review coverage is **12/1,247** and all 10 picks remain low-confidence, not integration-approved. See `release-decision-first-hosted-verification.md` for exact source counts, screenshots, safe durable proof and limits. This closes BUG7, not overall customer acceptance.
+
+## Historical original-subtask outcome
 
 Reproduced the complaint against the supplied attachment, actual `public/index.html`, and the latest existing private report in real Chromium. The colors/header were present; saying “the CSS matches” was not sufficient. The public inventory began 6,644.80px down the desktop page and 9,335.14px down the mobile page, and **all 449 discovery rows had lost structured source details**. The public projection also rendered an unsupported “No material changes detected” claim.
 

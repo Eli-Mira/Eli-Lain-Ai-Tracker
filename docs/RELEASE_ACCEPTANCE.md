@@ -4,7 +4,13 @@ Status: **NOT RELEASE-APPROVED**. Opened 2026-10-01 after Eli rejected plumbing-
 
 This checklist supersedes the old IMPLEMENTATION_TODO.md checked boxes and historical handoff completion language. PASS requires the actual output consumer and useful outcome, not merely a file existing or tests returning green.
 
-## Current repair gate — October 1, 2026
+## Latest repair gate — October 2, 2026 (Cairo)
+
+**BUG7 decision-first first-view/order/disclosure defect: VERIFIED SHIPPED; customer release remains OPEN.** Reviewed production runtime `e62b0faf3938ca7d6fe9e35dcbaa8420640513b3`; independently approved test-only native-toggle follow-up `8ee2bd8730fb89759feac441efb5834809557c36`. Fresh manual CI **36933189703** succeeded (**798 passed / 2 skipped**, local **800 passed**, 40 repeated width-case executions). Actual Pages bytes equal the downloaded CI file byte for byte: **3,294,609 bytes**, SHA256 `e5d5f04b432bfd6cbaca89a4e69091f8451b9b04848e1dd5cd392395a6a93e44`. **102 offline browser checks / zero failures**, 390px/1440px, JS on/off; public shortlist first, full **2,281-row** archive closed initially, all **1,187 Skills.sh owner IDs** retained. Telegram exact HTML attachment receipt-confirmed; Discord independently read back; Pages verified before sends and cache save succeeded. Current recommendation coverage remains **12/1,247 candidates**, 10 low-confidence cards; relevance/live/dependency/security/delivery limits stay open. Full proof: `release-decision-first-hosted-verification.md` and durable `EliLain-Intel-Audits/hosted-36933189703/`.
+
+The preceding failed CI **36932048178** published nothing; its three identical native-toggle test races were corrected without weakening expected strings or changing production code. Its old pending status is superseded by the fresh success above, not rewritten as a success. No real provider probe, paid inference, router edit, summary request or destructive owner dedupe occurred in this repair.
+
+## Earlier repair gate — October 1, 2026
 
 **Fresh publication gate PASS; customer release remains OPEN.** Independent reviewer `deleg_8571a6cf` approved all 21 files / 36 hunks and the parent matched exact coverage/digest before committing/pushing runtime `a8c24789ba065433c7dd7d9d5cba831edd61c90e`. Manual CI `36904275396` succeeded: clean-runner **790 passed / 2 setup-dependent skips**; local full suite **792 passed**. Downloaded CI export and actual served Pages bytes match byte for byte: **3,068,597 bytes**, SHA256 `d2172e330e7f2cf2af345856adf05221812dd01bbca84fe9451566d578050104`, **2,099 rows**, **46 Chromium checks / zero failures** on the actual served file. Telegram attachment is receipt-confirmed; Discord attachment independently read back. Pages recurrence was enabled only afterward and the exact GitHub variable read back `true`. Netlify remains the mirror. Full evidence and limits: `release-six-bugs-hosted-verification.md`.
 
