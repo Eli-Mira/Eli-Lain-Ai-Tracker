@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 FIXTURES = "tests/fixtures"
 
 NOW = datetime(2026, 10, 1, 0, 20, tzinfo=timezone.utc)
-PROJECTS = {'hearth-pos', 'gesture-control', 'fruit-slicer', 'data-ai'}
+PROJECTS = {'hearth-pos', 'gesture-control', 'data-ai'}
 
 
 def evaluate(items, now=NOW):
@@ -53,7 +53,7 @@ def test_one_observed_skill_gets_distinct_project_reasons_and_multiple_fit_axes(
         assert selection['integration_tested'] is False
         assert selection['confidence'] == 'low'
         reasons.append(selection['reason'])
-    assert len(set(reasons)) == 4
+    assert len(set(reasons)) == len(PROJECTS)
 
 
 def metadata(repo='obra/superpowers', **overrides):
@@ -97,7 +97,6 @@ def test_curated_profiles_route_known_observations_to_specific_project_workstrea
     expected = {
         'hearth-pos': {ids[0], ids[1]},
         'gesture-control': {ids[0], ids[2]},
-        'fruit-slicer': {ids[0], ids[1]},
         'data-ai': {ids[3], ids[4], ids[5], ids[6]},
     }
     for project, selections in expected.items():
@@ -169,8 +168,8 @@ def test_incompatible_frameworks_are_explained_not_offered_as_native_project_dep
     assert 'React' in excluded[react]['reason']
     assert 'PostgreSQL' in excluded[postgres]['reason']
     assert all(entry['source_urls'] and entry['evaluation_status'] == 'metadata-only' for entry in excluded.values())
-    fruit = result['groups']['fruit-slicer']
-    assert 'unconfirmed' in next(entry for entry in fruit['excluded'] if entry['id'] == browser)['reason']
+    gesture = result['groups']['gesture-control']
+    assert 'camera' in next(entry for entry in gesture['excluded'] if entry['id'] == browser)['reason']
     assert postgres not in result['coverage']['unreviewed_ids']
 
 

@@ -1,5 +1,6 @@
 """Read-only, broad skill/repository discovery. Nothing is installed or executed."""
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 import re
 from urllib.parse import urljoin, urlsplit
@@ -27,6 +28,8 @@ def _safe_url(value, base, hosts):
 
 def _path_identity(url, skill=False):
     parts = urlsplit(url)
+    if parts.query or parts.fragment:
+        raise ValueError('Discovery identity URL cannot contain query or fragment')
     path = parts.path.strip('/')
     pieces = path.split('/')
     if any(not re.fullmatch(r'[A-Za-z0-9_.-]+', p) or p in ('.', '..') for p in pieces):
@@ -46,7 +49,12 @@ async def _get(client, url, *, hosts, params=None, headers=None):
     for _ in range(4):
         response = await client.get(current, params=params, headers=headers, timeout=30, follow_redirects=False)
         if response.status_code in (301, 302, 303, 307, 308):
-            current = _safe_url(response.headers.get('location'), str(response.url), hosts)
+            target = _safe_url(response.headers.get('location'), str(response.url), hosts)
+            authenticated = any(key.lower() in ('authorization', 'x-vercel-oidc-token') for key in (headers or {}))
+            before, after = urlsplit(current), urlsplit(target)
+            if authenticated and (before.scheme, before.hostname, before.port or 443) != (after.scheme, after.hostname, after.port or 443):
+                raise ValueError('Authenticated redirect to different origin refused')
+            current = target
             params = None
             continue
         if response.status_code == 429:
@@ -114,6 +122,8 @@ async def _github(client, periods):
             if period not in ('daily', 'weekly', 'monthly'):
                 raise ValueError('Unsupported GitHub Trending period')
             response = await _get(client, url, hosts=GITHUB_HOSTS)
+            if response.url.path != '/trending' or response.url.params != httpx.QueryParams({'since': period}) or response.url.fragment:
+                raise ValueError('GitHub Trending redirect changed requested period or scope')
             soup = _html(response)
             articles = soup.select('article.Box-row')
             if not articles:
@@ -157,8 +167,8 @@ SKILLS_VIEWS = {'all-time': 'https://skills.sh/', 'trending': 'https://skills.sh
 
 async def _public_skills(client):
     source = _source('skills-sh', 'https://skills.sh/', {
-        'mode': 'public-html',
-        'scope': 'All rows in the three public rendered leaderboards only; unrendered/paginated catalog not scanned.',
+        'mode': 'public-html', 'representation': 'server-rendered-initial-html',
+        'scope': 'All rows in the three initial server-rendered public leaderboard HTML snapshots only; hydrated browser rows can differ; unrendered/paginated catalog not scanned.',
         'views': {},
     })
     rows = {}
@@ -167,6 +177,8 @@ async def _public_skills(client):
         source['coverage']['views'][view] = report
         try:
             response = await _get(client, url, hosts=SKILLS_HOSTS)
+            if response.url.path != urlsplit(url).path or response.url.query or response.url.fragment:
+                raise ValueError('Skills leaderboard redirect changed requested view or scope')
             soup = _html(response)
             anchors = [a for a in soup.select('a[href]') if a.select_one('h3')]
             if not anchors:
@@ -304,7 +316,8 @@ async def _skill_metadata(client, rows, source):
     """Read only meta description and topic labels, never SKILL.md files or code."""
     candidates = [row for row in rows if not row['summary']]
     report = {'budget': METADATA_LIMIT, 'attempted': 0,
-              'enriched': 0, 'errors': 0, 'not_scanned': max(0, len(candidates) - METADATA_LIMIT),
+              'enriched': 0, 'descriptions': 0, 'topics_available': 0, 'empty': 0,
+              'errors': 0, 'not_scanned': max(0, len(candidates) - METADATA_LIMIT),
               'scope': 'Bounded public skill detail meta descriptions and topics; no scripts, prompts, or external URLs followed.'}
     source['coverage']['metadata'] = report
     for row in candidates:
@@ -321,6 +334,9 @@ async def _skill_metadata(client, rows, source):
                     return
                 report['attempted'] += 1
                 response = await _get(client, row['url'], hosts=SKILLS_HOSTS)
+            final_url = _safe_url(str(response.url), row['url'], SKILLS_HOSTS)
+            if _path_identity(final_url, skill=True) != row['evidence']['skill_id']:
+                raise ValueError('Skill detail redirect identity mismatch')
             soup = _html(response)
             main = soup.select_one('main')
             if main is None or main.select_one('h1') is None:
@@ -334,9 +350,17 @@ async def _skill_metadata(client, rows, source):
             row['summary'] = description
             row['evidence']['description'] = description
             row['evidence']['topics'] = topics
-            row['evidence']['metadata'] = {'status': 'ok', 'url': row['url'],
-                'description_field': 'meta[name=description]', 'description_available': bool(description)}
-            report['enriched'] += 1
+            useful = bool(description or topics)
+            row['evidence']['metadata'] = {'status': 'ok' if useful else 'empty', 'url': row['url'],
+                'final_url': final_url, 'http_status': response.status_code,
+                'checked_at': datetime.now(timezone.utc).isoformat(),
+                'sha256': hashlib.sha256(response.content).hexdigest(),
+                'description_field': 'meta[name=description]', 'description_available': bool(description),
+                'topics_available': bool(topics)}
+            report['enriched'] += int(useful)
+            report['descriptions'] += int(bool(description))
+            report['topics_available'] += int(bool(topics))
+            report['empty'] += int(not useful)
         except (httpx.HTTPError, ValueError) as exc:
             if 'HTTP 429 rate limited' in str(exc):
                 rate_limited.set()

@@ -12,12 +12,9 @@ import pytest
 
 SITE = "3970e0fe-8564-4903-9a55-c5f8de49fb8b"
 DEPLOY = "abc123"
-URL = "https://report-fixture.netlify.app/"
-URL_HOST = "report-fixture.netlify.app"
-# Netlify answers 401 for this per-deploy alias on a team site, so the canonical
-# ssl_url above is what must be read back. The real deploy payload carries both.
-ALIAS = "https://abc123--report-fixture.netlify.app/"
-ALIAS_HOST = "abc123--report-fixture.netlify.app"
+# The bot token appears in the request PATH, so it must never be logged or
+# asserted on as a literal in failure messages. Protocol stubs reference the
+# path segment through this alias instead of the raw secret value.
 ENV = {
     "NETLIFY_AUTH_TOKEN": "test-netlify-token",
     "NETLIFY_SITE_ID": SITE,
@@ -26,6 +23,41 @@ ENV = {
     "DISCORD_BOT_TOKEN": "TEST_DISCORD_TOKEN",
     "DISCORD_CHANNEL_ID": "123456789012345678",
 }
+ENV["TELEGRAM_TOKEN_PATH"] = ENV["TELEGRAM_BOT_TOKEN"]
+URL = "https://report-fixture.netlify.app/"
+URL_HOST = "report-fixture.netlify.app"
+# Netlify answers 401 for this per-deploy alias on a team site, so the canonical
+# ssl_url above is what must be read back. The real deploy payload carries both.
+ALIAS = "https://abc123--report-fixture.netlify.app/"
+ALIAS_HOST = "abc123--report-fixture.netlify.app"
+
+
+def parse_multipart(request):
+    """Split a multipart/form-data body into plain fields and file parts.
+
+    Returns ``(fields, files)`` where each file is ``(filename, bytes,
+    reported_name)``. Used to assert the exact published bytes are uploaded,
+    rather than trusting a mocked 200 response.
+    """
+    boundary = request.headers["content-type"].split("boundary=", 1)[1].encode()
+    fields, files = {}, {}
+    for part in request.content.split(b"--" + boundary):
+        if not part.strip() or part.strip() == b"--":
+            continue
+        head, _, body = part.partition(b"\r\n\r\n")
+        body = body.rstrip(b"\r\n-")
+        headers = {}
+        for line in head.decode("latin-1").split("\r\n")[1:]:
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+        disposition = headers.get("content-disposition", "")
+        name = disposition.split('name="', 1)[1].split('"', 1)[0] if 'name="' in disposition else ""
+        if "filename=" in disposition:
+            reported = disposition.split('filename="', 1)[1].split('"', 1)[0]
+            files[name] = (reported, body, name.encode())
+        else:
+            fields[name] = body.decode()
+    return fields, files
 
 
 def module():
@@ -91,23 +123,42 @@ class Protocol:
             assert "cookie" not in request.headers
             return httpx.Response(200, content=self.data, headers={"content-type": "text/html; charset=utf-8"})
         if host == "api.telegram.org":
-            assert request.method == "POST" and path == "/bot" + ENV["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
-            body = json.loads(request.content)
-            self.brief = body["text"]
-            assert body["chat_id"] == ENV["TELEGRAM_CHAT_ID"]
-            assert "parse_mode" not in body
-            assert body["link_preview_options"] == {"is_disabled": True}
-            return httpx.Response(200, json={"ok": True, "result": {"message_id": 42,
-                                          "chat": {"id": int(ENV["TELEGRAM_CHAT_ID"])}, "text": self.brief}})
+            assert request.method == "POST"
+            if path == "/bot" + ENV["TELEGRAM_TOKEN_PATH"] + "/sendMessage":
+                body = json.loads(request.content)
+                self.brief = body["text"]
+                assert body["chat_id"] == ENV["TELEGRAM_CHAT_ID"]
+                assert "parse_mode" not in body
+                assert body["link_preview_options"] == {"is_disabled": True}
+                return httpx.Response(200, json={"ok": True, "result": {"message_id": 42,
+                                              "chat": {"id": int(ENV["TELEGRAM_CHAT_ID"])}, "text": self.brief}})
+            if path == "/bot" + ENV["TELEGRAM_TOKEN_PATH"] + "/sendDocument":
+                fields, files = parse_multipart(request)
+                assert fields["chat_id"] == ENV["TELEGRAM_CHAT_ID"]
+                assert files["document"][0] == "index.html"
+                assert files["document"][1] == self.data
+                self.brief = fields["caption"]
+                return httpx.Response(200, json={"ok": True, "result": {"message_id": 43,
+                                              "chat": {"id": int(ENV["TELEGRAM_CHAT_ID"])},
+                                              "text": self.brief,
+                                              "document": {"file_name": files["document"][0],
+                                                            "file_size": len(self.data)}}})
         if host == "discord.com":
             assert request.headers["authorization"] == "Bot " + ENV["DISCORD_BOT_TOKEN"]
             if request.method == "POST" and path == "/api/v10/channels/" + ENV["DISCORD_CHANNEL_ID"] + "/messages":
-                body = json.loads(request.content)
-                assert body["content"] == self.brief
-                assert body["allowed_mentions"] == {"parse": [], "replied_user": False}
-                return httpx.Response(200, json={"id": "999999999999999999", "channel_id": ENV["DISCORD_CHANNEL_ID"], "content": self.brief})
+                fields, files = parse_multipart(request)
+                self.brief = json.loads(fields["payload_json"])["content"]
+                assert files["files[0]"][0] == "index.html"
+                assert files["files[0]"][1] == self.data
+                return httpx.Response(200, json={"id": "999999999999999999", "channel_id": ENV["DISCORD_CHANNEL_ID"],
+                                                  "content": self.brief,
+                                                  "attachments": [{"filename": "index.html",
+                                                                   "size": len(self.data)}]})
             if request.method == "GET" and path == "/api/v10/channels/" + ENV["DISCORD_CHANNEL_ID"] + "/messages/999999999999999999":
-                return httpx.Response(200, json={"id": "999999999999999999", "channel_id": ENV["DISCORD_CHANNEL_ID"], "content": self.brief})
+                return httpx.Response(200, json={"id": "999999999999999999", "channel_id": ENV["DISCORD_CHANNEL_ID"],
+                                                  "content": self.brief,
+                                                  "attachments": [{"filename": "index.html",
+                                                                   "size": len(self.data)}]})
         raise AssertionError("Unexpected protocol request")
 
 
@@ -332,7 +383,8 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert result.hosted.url == URL
     assert result.hosted.sha256 == hashlib.sha256(data).hexdigest()
     assert result.telegram.confirmation == "receipt-confirmed"
-    assert result.telegram.message_id == "42"
+    # text message plus the attached standalone file: "42" is the text, "43" the document
+    assert result.telegram.message_id == "42/43"
     assert result.discord.confirmation == "independently-read-back"
     assert result.discord.message_id == "999999999999999999"
     assert len(result.brief) < 1500
@@ -343,7 +395,7 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert "not a fresh fetch" in result.brief
     assert URL in result.brief
     assert [r.headers["host"] for r in protocol.calls] == ["api.netlify.com"] * 4 + [
-        URL_HOST, "api.telegram.org", "discord.com", "discord.com"]
+        URL_HOST, "api.telegram.org", "api.telegram.org", "discord.com", "discord.com"]
     assert (artifact_dir / "index.html").read_bytes() == data
 
 

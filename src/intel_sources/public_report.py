@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, localcontext
 from contextlib import closing
 import base64
 import hashlib
@@ -108,11 +109,160 @@ def _public_title(value: Any, identifier: str, source: str) -> str:
     return identifier[prefix_lengths[source]:]
 
 
+# Only closed vocabularies and bounded numbers cross the public metadata seam.
+# Cached prose, evidence URLs, pricing overrides and arbitrary nested fields do not.
+MODALITIES = frozenset({'text', 'image', 'audio', 'video', 'file', 'embeddings', 'speech', 'transcription', 'rerank'})
+PARAMETERS = frozenset({'tools', 'tool_choice', 'reasoning', 'reasoning_effort', 'include_reasoning',
+    'response_format', 'structured_outputs', 'temperature', 'top_p', 'top_k', 'seed',
+    'max_tokens', 'max_completion_tokens', 'stop', 'frequency_penalty', 'presence_penalty',
+    'repetition_penalty', 'logprobs', 'top_logprobs', 'min_p', 'web_search_options'})
+COUNTRIES = frozenset('US GB DE FR CA AU CN JP KR SG IN NL FI SE NO CH IE AE IL BR ES IT PL TW HK RU ZA'.split())
+LANGUAGES = frozenset({'Python', 'TypeScript', 'JavaScript', 'Rust', 'Go', 'Shell', 'C++', 'C',
+    'PLSQL', 'Java', 'HTML', 'CSS', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Dart', 'Lua',
+    'R', 'Scala', 'Julia', 'Elixir', 'Haskell', 'Zig', 'Jupyter Notebook', 'Dockerfile', 'Vue'})
+CATALOG_TAGS = frozenset({'Text', 'Tools', 'Vision', 'Reasoning', 'Audio', 'Video', 'Image',
+    'Embeddings', 'Cache', 'ComputerUse', 'Files', 'WebSearch', '1M', '2M', '128K', '200K'})
+ENDPOINT_FORMATS = frozenset({'openai', 'anthropic', 'gemini', 'responses', 'chat', 'embeddings', 'images', 'audio'})
+
+
+def _public_metadata(row: dict[str, Any], source: str) -> list[dict[str, str]]:
+    """Reconstruct typed public catalog fields; NEVER copy an evidence dictionary.
+
+    Id/URL binding is checked by the caller. Units are source-specific: OpenRouter
+    USD/token is converted to USD/million; UnoRouter already reports USD/million.
+    Every label is static; every value is an enum, boolean or bounded number.
+    """
+    evidence = row.get('evidence')
+    if not isinstance(evidence, dict):
+        return []
+    result = []
+
+    def emit(label: str, value: str) -> None:
+        result.append({'label': label, 'value': value})
+
+    def integer(label: str, value: Any, *, suffix: str = '', minimum: int = 0,
+                maximum: int = 10_000_000_000) -> None:
+        if type(value) is int and minimum <= value <= maximum:
+            emit(label, f'{value:,}{suffix}')
+
+    def enum(label: str, value: Any, allowed: frozenset[str]) -> None:
+        if isinstance(value, str) and value in allowed:
+            emit(label, value)
+
+    def enums(label: str, values: Any, allowed: frozenset[str]) -> None:
+        if isinstance(values, list) and len(values) <= 100:
+            selected = sorted({v for v in values if isinstance(v, str) and v in allowed})
+            if selected:
+                emit(label, ', '.join(selected))
+
+    def price(label: str, value: Any, *, per_token: bool = False, per_request: bool = False) -> None:
+        if type(value) not in (str, int, float):
+            return
+        text = str(value)
+        if len(text) > 40 or not re.fullmatch(r'\d+(?:\.\d+)?(?:[eE][+-]?\d{1,2})?', text):
+            return
+        try:
+            with localcontext() as context:
+                context.prec = 48
+                amount = Decimal(text)
+                if not amount.is_finite() or not 0 <= amount <= 1_000_000:
+                    return
+                if per_token:
+                    amount *= 1_000_000
+                # Prevent giant decimals and hidden underflow turning into "free".
+                if amount != 0 and amount < Decimal('0.000000000001'):
+                    return
+                formatted = format(amount.quantize(Decimal('0.000000000001')), 'f').rstrip('0').rstrip('.')
+                emit(label, f'USD {formatted or "0"} / {"request" if per_request else "million tokens"}')
+        except InvalidOperation:
+            return
+
+    if source == 'openrouter-models':
+        integer('Context', evidence.get('context_length'), suffix=' tokens', minimum=1, maximum=100_000_000)
+        top = evidence.get('top_provider')
+        if isinstance(top, dict):
+            integer('Max output', top.get('max_completion_tokens'), suffix=' tokens', minimum=1, maximum=100_000_000)
+        architecture = evidence.get('architecture')
+        if isinstance(architecture, dict):
+            enums('Input modalities', architecture.get('input_modalities'), MODALITIES)
+            enums('Output modalities', architecture.get('output_modalities'), MODALITIES)
+        enums('Supported parameters', evidence.get('supported_parameters'), PARAMETERS)
+        pricing = evidence.get('pricing')
+        if isinstance(pricing, dict):
+            price('Listed input price', pricing.get('prompt'), per_token=True)
+            price('Listed output price', pricing.get('completion'), per_token=True)
+            for key, label in [('input_cache_read', 'Listed cache read price'), ('input_cache_write', 'Listed cache write price')]:
+                price(label, pricing.get(key), per_token=True)
+            price('Listed request price', pricing.get('request'), per_request=True)
+            if isinstance(pricing.get('overrides'), list) and pricing['overrides']:
+                emit('Pricing scope', 'Base rates; tiered pricing present — consult source')
+    elif source == 'openrouter-providers':
+        enum('Headquarters country', evidence.get('headquarters'), COUNTRIES)
+        enums('Datacenter countries', evidence.get('datacenters'), COUNTRIES)
+    elif source == 'unorouter-models':
+        enum('Model type', evidence.get('type'), frozenset({'text', 'image', 'audio', 'video', 'embeddings'}))
+        enums('Catalog tags', evidence.get('tags'), CATALOG_TAGS)
+        enums('Endpoint formats', evidence.get('supported_endpoint_types'), ENDPOINT_FORMATS)
+        pricing = evidence.get('pricing')
+        if isinstance(pricing, dict):
+            if pricing.get('is_fixed_price') is False:
+                price('Listed input price', pricing.get('input_price'))
+                price('Listed output price', pricing.get('output_price'))
+            elif pricing.get('is_fixed_price') is True:
+                price('Listed fixed price', pricing.get('fixed_price'), per_request=True)
+        for key, label in [('is_free', 'Catalog free flag'), ('online', 'Catalog online flag')]:
+            if type(evidence.get(key)) is bool:
+                emit(label, str(evidence[key]).lower())
+    elif source == 'github-trending':
+        enum('Language', evidence.get('language'), LANGUAGES)
+        integer('Stars', evidence.get('total_stars'))
+        integer('Forks', evidence.get('forks'))
+        periods = evidence.get('periods')
+        if isinstance(periods, dict):
+            for period in ('daily', 'weekly', 'monthly'):
+                entry = periods.get(period)
+                if isinstance(entry, dict):
+                    integer(f'{period} rank', entry.get('rank'), minimum=1, maximum=100_000)
+                    integer(f'{period} stars gained', entry.get('stars_gained'))
+    elif source == 'skills-sh':
+        views = evidence.get('views')
+        if isinstance(views, dict):
+            for view in ('all-time', 'trending', 'hot'):
+                entry = views.get(view)
+                if isinstance(entry, dict):
+                    integer(f'{view} rank', entry.get('rank'), minimum=1, maximum=10_000_000)
+                    integer(f'{view} installs', entry.get('installs'))
+    return result
+
+
 def _timestamp(value: Any, now: datetime) -> str | None:
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})", value):
         return None
     parsed = parse_time(value)
     return value if isinstance(value, str) and parsed is not None and parsed <= now else None
+
+
+def _public_windows(source: str, row: dict[str, Any]) -> str:
+    """Report only public window names, status enums and bounded row counts."""
+    coverage = row.get('coverage')
+    if not isinstance(coverage, dict):
+        return ''
+    family, windows, count_key = (
+        ('periods', ('daily', 'weekly', 'monthly'), 'item_count') if source == 'github-trending'
+        else ('views', ('all-time', 'trending', 'hot'), 'rendered_rows'))
+    if source not in ('github-trending', 'skills-sh') or not isinstance(coverage.get(family), dict):
+        return ''
+    details = []
+    for window in windows:
+        entry = coverage[family].get(window)
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get('status')
+        status = status if status in ('ok', 'partial', 'error', 'skipped') else 'unverified'
+        count = entry.get(count_key)
+        rows = f'{count:,} rows' if type(count) is int and 0 <= count <= 10_000_000 else 'rows unavailable'
+        details.append(f'{window}: {status} ({rows})')
+    return ' Saved public windows: ' + '; '.join(details) + '.' if details else ''
 
 
 def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
@@ -129,6 +279,10 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
         raise ValueError("export limit must be an integer from 1 to 200")
     sources = {s["name"]: s for s in state.get("sources", [])
                if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"] in PUBLIC_SOURCES}
+    private_sources = {name for name, source in sources.items()
+                       if isinstance(source.get('coverage'), dict)
+                       and source['coverage'].get('mode') == 'api'}
+    sources = {name: source for name, source in sources.items() if name not in private_sources}
     tools = []
     counts = {name: 0 for name in PUBLIC_SOURCES}
     seen = set()
@@ -136,8 +290,17 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
                   and isinstance(r.get("source"), str) and isinstance(r.get("id"), str)]
     for row in sorted(candidates, key=lambda r: (r["source"], r["id"])):
         source = row.get("source")
-        if source not in PUBLIC_SOURCES:
+        if source not in PUBLIC_SOURCES or source in private_sources:
             continue
+        raw_evidence = row.get('evidence')
+        if isinstance(raw_evidence, dict):
+            # Public names/URLs cannot authorize an explicitly key-scoped origin.
+            scope = raw_evidence.get('catalog_scope')
+            provenance = raw_evidence.get('provenance')
+            if (scope is not None and scope != 'public') or (
+                isinstance(provenance, dict) and provenance.get('kind') in (
+                    'key_scoped_catalog', 'local_aggregated_catalog')):
+                continue
         identity = _public_identity(row, source)
         if identity is None or (source, identity[0]) in seen:
             continue
@@ -159,8 +322,12 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
                                                if isinstance(t, str) and t in PROJECT_TYPES})
                           if isinstance(row.get("project_types"), list) else [],
                       "freshness": freshness, "evidence": [evidence]})
+        metadata = _public_metadata(row, source)
+        if metadata:
+            tools[-1]['public_metadata'] = metadata
         counts[source] += 1
     full_inventory = tools
+    inventory_counts = dict(counts)
     discovery = [{"id": row["id"], "headline": row["headline"], "url": row["url"],
                   "source": row["source"], "freshness": row["freshness"],
                   "checked_at": None if row["evidence"][0]["observed_at"] == "not supplied" else row["evidence"][0]["observed_at"],
@@ -195,7 +362,9 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
         status = row.get("status") if row.get("status") in ("ok", "partial", "error", "skipped") else "unverified"
         public_sources.append({"name": name, "status": status, "checked_at": _timestamp(row.get("checked_at"), now),
                                "item_count": counts[name], "url": url,
-                               "coverage": f"{coverage} Export bounded to {max_items_per_source} rows per source; counts are exported rows."})
+                               "coverage": (f"{coverage} Export bounded to {max_items_per_source} rows per source; counts are exported rows. "
+                                            f"Valid saved public inventory: {inventory_counts[name]:,} rows."
+                                            + _public_windows(name, row))})
     return {**recommendations, "api_items": [], "news_items": [], "tool_items": tools, "source_items": public_sources,
             "change_items": [], "action_items": [], "report_date": now.strftime("%Y-%m-%d"),
             "generated_at": now.isoformat(), "persona_image_url": None, "baseline": False,
@@ -273,7 +442,12 @@ def export_public_report(state_path: str | Path, news_db_path: str | Path, expor
     _check_export_directory(directory)
     state, _internal_news = read_saved_inputs(state_path, news_db_path)
     payload = build_public_payload(state, now=now, max_items_per_source=max_items_per_source)
-    html = _standalone_html(LainReporter().render(**payload))
+    from jinja2 import TemplateError
+    try:
+        rendered = LainReporter().render(**payload, public_export=True)
+    except TemplateError:
+        raise ValueError('public template unavailable') from None
+    html = _standalone_html(rendered)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "index.html"
     temporary = None

@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from intel_sources.recommendations import evaluate_projects  # noqa: E402
 
 MAX_ITEMS = 90
-PROJECTS = ("hearth-pos", "gesture-control", "fruit-slicer", "data-ai")
+PROJECTS = ("hearth-pos", "gesture-control", "data-ai")
 
 
 def slim(item):

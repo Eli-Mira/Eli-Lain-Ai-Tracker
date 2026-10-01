@@ -39,12 +39,18 @@ jobs:
           key: intel-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             intel-state-${{ runner.os }}-
+          # Every file the run reads or rewrites must be listed here. A missing
+          # entry is a silent data loss: per-feed cooldowns reset daily and the
+          # project evaluation is regenerated from scratch each run.
           path: |
             data/intel_state.json
             data/provider_changes.json
             data/provider_state.json
+            data/project_evaluations.json
+            data/delivery_receipts.json
             data/news.db
             data/health.json
+            data/feed_health.json
 
       - name: Install Chromium for rendered-site tests
         run: python -m playwright install --with-deps chromium

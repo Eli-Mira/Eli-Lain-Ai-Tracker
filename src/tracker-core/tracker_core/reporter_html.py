@@ -32,6 +32,7 @@ class HTMLReporter:
     """Generate HTML reports from tracker data using templates."""
     
     TEMPLATE_DIR = Path(__file__).parent.parent.parent / "templates"
+    STRICT_THEME = False
     
     def __init__(self, theme: str = "default"):
         self.theme = theme
@@ -57,6 +58,7 @@ class HTMLReporter:
         runtime_source: str | None = None,
         recommendation_groups: dict[str, dict[str, Any]] | None = None,
         recommendation_coverage: dict[str, Any] | None = None,
+        public_export: bool = False,
     ) -> str:
         from datetime import datetime, timezone
         
@@ -74,6 +76,8 @@ class HTMLReporter:
         try:
             template = self.env.get_template(template_name)
         except TemplateNotFound:
+            if self.STRICT_THEME:
+                raise
             template = self.env.get_template("report_template.html")
         
         return template.render(
@@ -90,6 +94,7 @@ class HTMLReporter:
             runtime_source=runtime_source,
             recommendation_groups=recommendation_groups or {},
             recommendation_coverage=recommendation_coverage or {},
+            public_export=public_export,
         )
     
     def save(
@@ -109,6 +114,7 @@ class HTMLReporter:
         runtime_source: str | None = None,
         recommendation_groups: dict[str, dict[str, Any]] | None = None,
         recommendation_coverage: dict[str, Any] | None = None,
+        public_export: bool = False,
     ) -> Path:
         html = self.render(
             api_items=api_items,
@@ -124,6 +130,7 @@ class HTMLReporter:
             runtime_source=runtime_source,
             recommendation_groups=recommendation_groups or {},
             recommendation_coverage=recommendation_coverage or {},
+            public_export=public_export,
         )
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +139,9 @@ class HTMLReporter:
 
 
 class LainReporter(HTMLReporter):
+    # Explicitly selecting the supplied design must never silently redesign.
+    STRICT_THEME = True
+
     def __init__(self):
         super().__init__(theme="lain")
 

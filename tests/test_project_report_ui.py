@@ -31,7 +31,7 @@ def test_lain_render_accepts_evaluated_groups_and_preserves_inventory(tmp_path):
             **result["coverage"], "inventory_count": result["inventory_count"], "reviewed_count": 2})
     soup = BeautifulSoup(html, "html.parser")
     assert len(soup.select("#discoveries .discovery-item")) == 2
-    assert len(soup.select("#project-shortlists .project-group")) == 4
+    assert len(soup.select("#project-shortlists .project-group")) == 3
     assert "2 reviewed / 2 discovery candidates" in soup.select_one("#recommendation-coverage").text
     card = soup.select_one(".recommendation-item[data-id='" + TDD + "']")
     for expected in ("Reason:", "Constraints:", "Confidence: low", "Discovery: fresh", "Official metadata: unverified",
@@ -105,7 +105,8 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     public.write_text(LainReporter().render(**payload), encoding="utf-8")
     shortlists = {project: len(group["shortlist"]) for project, group in groups.items()}
     assert sum(shortlists.values()) > 0, "real inventory produced no reviewed shortlist candidates"
-    assert shortlists["fruit-slicer"] > 0, "fruit-slicer shortlist is empty from real saved data"
+    assert "fruit-slicer" not in shortlists, "paused project leaked into active recommendations"
+    assert shortlists["hearth-pos"] > 0, "Hearth POS shortlist is empty from real saved data"
     # Scale-relative: this asserts coverage is disclosed and that the export cap
     # is real, not that the inventory happens to exceed some live count.
     assert coverage["reviewed_count"] > 0
@@ -129,7 +130,7 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(path.as_uri(), wait_until="load")
                 assert page.locator("#discoveries .discovery-item:visible").count() == exported
-                assert page.locator("#project-shortlists .project-group").count() == 4
+                assert page.locator("#project-shortlists .project-group").count() == 3
                 assert page.locator("#recommendation-coverage").text_content().startswith(f"{expected} reviewed / ")
                 cards = page.locator("#project-shortlists .recommendation-item")
                 assert cards.count() > 0

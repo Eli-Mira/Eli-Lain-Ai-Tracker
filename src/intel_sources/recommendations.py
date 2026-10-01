@@ -10,7 +10,6 @@ from .store import parse_time
 PROJECTS = {
     'hearth-pos': 'Hearth POS: native PySide6, transactional correctness and operator UX.',
     'gesture-control': 'Gesture control: camera snapshots, latency and safe OS input.',
-    'fruit-slicer': 'Fruit-slicer: collision, scoring and frame pacing; engine is unconfirmed.',
     'data-ai': 'Data/AI: database performance, retrieval and model development.',
 }
 
@@ -287,8 +286,9 @@ def evaluate_projects(items: list[dict], now: datetime | None = None) -> dict:
         if previous is None or (parse_time(item.get('checked_at')) or epoch) >= (parse_time(previous.get('checked_at')) or epoch):
             discovery[identifier] = item
     for item in discovery.values():
-        profile = PROFILES.get(item.get('id'), {})
-        excluded = EXCLUSIONS.get(item.get('id'), {})
+        # Paused project rules remain archived, but never enter active outputs.
+        profile = {project: rule for project, rule in PROFILES.get(item.get('id'), {}).items() if project in groups}
+        excluded = {project: reason for project, reason in EXCLUSIONS.get(item.get('id'), {}).items() if project in groups}
         if not profile and not excluded:
             continue
         official = _official_metadata(item)

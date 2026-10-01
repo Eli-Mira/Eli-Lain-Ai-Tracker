@@ -20,6 +20,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _safe_error(error: Any) -> str | None:
+    if error is None:
+        return None
+    if isinstance(error, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", error):
+        return error
+    return "fetch_failure"
+
+
 @dataclass
 class SourceHealth:
     """Health record for a single source."""
@@ -84,6 +92,7 @@ class SourceHealthTracker:
         Returns:
             True if source is now disabled (circuit broken)
         """
+        error = _safe_error(error)
         source = self.get_or_create(source_name)
         source.consecutive_failures += 1
         source.last_failure = self._now()
@@ -139,10 +148,23 @@ class SourceHealthTracker:
             return
         try:
             data = json.loads(Path(self.state_path).read_text(encoding="utf-8"))
-            loaded = {}
-            for name, raw in data.items():
+            if not isinstance(data, dict):
+                raise ValueError("invalid health state")
+        except (ValueError, TypeError, OSError):
+            logger.warning("Could not load feed health state; no cooldown restored")
+            return
+        for name, raw in data.items():
+            try:
+                if not isinstance(raw, dict):
+                    raise ValueError("invalid health record")
                 values = dict(raw)
                 values["name"] = name
+                for key in ("consecutive_failures", "total_items"):
+                    value = values.get(key, 0)
+                    if type(value) is not int or value < 0:
+                        raise ValueError("invalid health count")
+                if type(values.get("is_disabled", False)) is not bool:
+                    raise ValueError("invalid disabled flag")
                 for key in ("last_success", "last_failure", "cooldown_until"):
                     value = values.get(key)
                     values[key] = datetime.fromisoformat(value) if value else None
@@ -150,10 +172,12 @@ class SourceHealthTracker:
                         raise ValueError("naive observation time")
                 if values.get("is_disabled") and not values.get("cooldown_until"):
                     values["is_disabled"] = False
-                loaded[name] = SourceHealth(**values)
-            self._sources.update(loaded)
-        except (ValueError, TypeError, AttributeError, OSError):
-            logger.warning("Could not load feed health state; no cooldown restored")
+                values["last_error"] = _safe_error(values.get("last_error"))
+                source = SourceHealth(**values)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning("Invalid feed health record skipped; valid siblings retained")
+                continue
+            self._sources[name] = source
 
     def save_state(self) -> None:
         """Atomically save optional state with safe failure classifications only."""
@@ -166,9 +190,7 @@ class SourceHealthTracker:
             values = asdict(source)
             for key in ("last_success", "last_failure", "cooldown_until"):
                 values[key] = values[key].isoformat() if values[key] else None
-            error = values.get("last_error")
-            if error and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", error):
-                values["last_error"] = "fetch_failure"
+            values["last_error"] = _safe_error(values.get("last_error"))
             data[name] = values
         temporary = None
         try:

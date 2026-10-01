@@ -27,11 +27,25 @@ class IntelStore:
         self.path = Path(path)
         self.max_age_hours = max_age_hours
 
+    @staticmethod
+    def _validate_state(state: Any) -> None:
+        # Reject partial snapshots rather than silently inventing a baseline.
+        if not isinstance(state, dict) or any(not isinstance(state.get(key), list) for key in ('items', 'changes', 'sources')):
+            raise ValueError('Invalid intel state structure')
+        if any(key in state and type(state[key]) is not bool for key in ('initialized', 'baseline')):
+            raise ValueError('Invalid intel state flags')
+        for key in ('items', 'changes'):
+            if any(not isinstance(row, dict) or any(not isinstance(row.get(field), str) or not row[field] for field in ('id', 'source')) for row in state[key]):
+                raise ValueError('Invalid intel item structure')
+        if any(not isinstance(row, dict) or not isinstance(row.get('name'), str) or not row['name'] for row in state['sources']):
+            raise ValueError('Invalid intel source structure')
+
     def read(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
         if not self.path.exists():
             return {'items': [], 'changes': [], 'sources': [], 'baseline': True}
         state = json.loads(self.path.read_text(encoding='utf-8'))
+        self._validate_state(state)
         by_source = {s['name']: s for s in state['sources']}
         for item in state['items']:
             checked = parse_time(item.get('checked_at'))
@@ -72,6 +86,7 @@ class IntelStore:
                 cached['not_observed_in_latest_fetch'] = True
                 rows.append(cached)
         state = {'items': rows, 'changes': changes, 'sources': sources, 'baseline': not initialized, 'initialized': initialized or bool(items)}
+        self._validate_state(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = None
         try:

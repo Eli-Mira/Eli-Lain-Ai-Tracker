@@ -31,6 +31,7 @@ from .public_report import PUBLIC_SOURCES
 
 MAX_HTML_BYTES = 4 * 1024 * 1024
 MAX_API_BYTES = 128 * 1024
+ATTACHMENT_NAME = "index.html"
 log = logging.getLogger(__name__)
 
 
@@ -109,7 +110,8 @@ class ChannelReceipt:
 
     @property
     def confirmed(self) -> bool:
-        return self.confirmation in {"receipt-confirmed", "independently-read-back"}
+        return self.confirmation in {"receipt-confirmed", "independently-read-back",
+                                     "previously-confirmed"}
 
 
 @dataclass(frozen=True)
@@ -134,7 +136,21 @@ def load_artifact(export_dir: str | Path) -> ReportArtifact:
     if not index.is_file() or index.is_symlink() or getattr(index.lstat(), "st_file_attributes", 0) & 0x400:
         raise DeliveryError("unexpected_files")
     data = index.read_bytes()
+    # Refuse before any upload: an unbounded read means an unbounded body on the
+    # wire, and Netlify's own limit is lower than our response ceiling.
+    if len(data) > MAX_HTML_BYTES:
+        raise DeliveryError("artifact_too_large")
     soup = BeautifulSoup(data.decode("utf-8"), "html.parser")
+    # The published file must be genuinely standalone. Checking only the footer
+    # let a remote <script src> through, which would turn the public page into a
+    # live dependency and a leak channel on every future run.
+    for node in soup.find_all(["script", "link", "iframe", "object", "embed", "img", "source"]):
+        for attribute in ("src", "href", "data", "srcset", "action", "formaction", "poster"):
+            value = node.get(attribute)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if value.strip().lower().startswith(("http://", "https://", "//", "data:")):
+                raise DeliveryError("remote_dependency")
     footer = soup.select_one("footer")
     text = footer.get_text(" ", strip=True) if footer else ""
     if "Public sanitized export of saved observations; not a fresh fetch." not in text:
@@ -152,6 +168,45 @@ def load_artifact(export_dir: str | Path) -> ReportArtifact:
             observations.add(match[1])
     return ReportArtifact(data, hashlib.sha1(data).hexdigest(), hashlib.sha256(data).hexdigest(),
                           rendered[0], tuple(sorted(observations)), tuple(sorted(counts.items())))
+
+
+def _attachment_verified(message: dict, artifact: ReportArtifact) -> bool:
+    """A text confirmation is not file delivery: check the stored attachment."""
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list):
+        return False
+    return any(isinstance(entry, dict) and entry.get("filename") == ATTACHMENT_NAME
+               and entry.get("size") == len(artifact.data) for entry in attachments)
+
+
+def load_receipts(state_path: str | Path | None) -> dict[str, dict[str, str]]:
+    """Read the durable per-artifact delivery record; absence is not an error."""
+    if state_path is None:
+        return {}
+    path = Path(state_path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value.get("artifacts", {}) if isinstance(value, dict) else {}
+
+
+def save_receipts(state_path: str | Path | None, artifact: ReportArtifact,
+                  receipts: DeliveryResult) -> None:
+    """Record the delivery so an identical artifact is not announced twice."""
+    if state_path is None:
+        return
+    path = Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    artifacts = load_receipts(state_path)
+    artifacts[artifact.sha256] = {
+        "url": receipts.hosted.url,
+        "telegram": receipts.telegram.message_id or "",
+        "discord": receipts.discord.message_id or "",
+    }
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps({"artifacts": artifacts}, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def resolve_public_dns(host: str) -> Sequence[str]:
@@ -214,15 +269,27 @@ class _PinnedTransport(httpx.BaseTransport):
 def _quiet_http_logs():
     # httpx INFO logs contain the Telegram token in the request path. Never
     # enable wire logging inside this secret-bearing operation.
-    loggers = [logging.getLogger(name) for name in ("httpx", "httpcore")]
-    old = [logger.disabled for logger in loggers]
-    for logger in loggers:
+    # Disabling only the parent is NOT enough: `Logger.disabled` is consulted
+    # per logger, and child loggers (httpcore.http11, h11._connection) do not
+    # inherit it, so a descendant can still emit a token-bearing line. Cover the
+    # whole tree by name prefix and force the level above every wire message.
+    prefixes = ("httpx", "httpcore", "h11")
+    names = {name for name in list(logging.root.manager.loggerDict)
+             if any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes)}
+    names |= set(prefixes)
+    previous = {name: (logging.getLogger(name).disabled, logging.getLogger(name).level)
+                for name in names}
+    for name in names:
+        logger = logging.getLogger(name)
         logger.disabled = True
+        logger.setLevel(logging.CRITICAL + 1)
     try:
         yield
     finally:
-        for logger, disabled in zip(loggers, old):
+        for name, (disabled, level) in previous.items():
+            logger = logging.getLogger(name)
             logger.disabled = disabled
+            logger.setLevel(level)
 
 
 class _Session:
@@ -314,9 +381,17 @@ class _Session:
             raise DeliveryError("html_mismatch")
         return HostedReport(url, artifact.sha256, deploy)
 
-    def telegram(self, brief: str) -> ChannelReceipt:
+    def telegram(self, brief: str, artifact: ReportArtifact | None = None) -> ChannelReceipt:
+        """Send the brief as text, then the verified standalone file.
+
+        The hosted URL alone does not deliver the report: the customer receives
+        a link, not the artifact. When the artifact is supplied the exact bytes
+        are uploaded and the receipt must echo the filename and size, so a
+        truncated or renamed upload can never be reported as confirmed.
+        """
         try:
-            response = self.api("POST", "https://api.telegram.org/bot" + self.config.telegram_token + "/sendMessage",
+            base = "https://api.telegram.org/bot" + self.config.telegram_token
+            response = self.api("POST", base + "/sendMessage",
                                 json={"chat_id": self.config.telegram_chat_id, "text": brief,
                                       "link_preview_options": {"is_disabled": True}})
             result = response.get("result", {})
@@ -325,16 +400,40 @@ class _Session:
                     or result.get("chat", {}).get("id") != int(self.config.telegram_chat_id)
                     or result.get("text") != brief):
                 raise DeliveryError("telegram_receipt_invalid")
+            if artifact is not None:
+                document = self.api(
+                    "POST", base + "/sendDocument",
+                    data={"chat_id": self.config.telegram_chat_id, "caption": brief[:1024]},
+                    files={"document": (ATTACHMENT_NAME, artifact.data, "text/html")})
+                sent = document.get("result", {})
+                if (document.get("ok") is not True
+                        or sent.get("document", {}).get("file_name") != ATTACHMENT_NAME
+                        or sent.get("document", {}).get("file_size") != len(artifact.data)
+                        or sent.get("chat", {}).get("id") != int(self.config.telegram_chat_id)):
+                    raise DeliveryError("telegram_attachment_unverified")
+                identifier = f"{identifier}/{sent.get('message_id')}"
             return ChannelReceipt("telegram", str(identifier), "receipt-confirmed")
         except DeliveryError as exc:
             return ChannelReceipt("telegram", None, "unconfirmed", exc.code)
 
-    def discord(self, brief: str) -> ChannelReceipt:
+    def discord(self, brief: str, artifact: ReportArtifact | None = None) -> ChannelReceipt:
+        """Send the brief, then the verified standalone file, then read it back.
+
+        Discord's independent readback must confirm the attachment is present
+        with the expected size; text-only confirmation is not file delivery.
+        """
         try:
             base = "https://discord.com/api/v10/channels/" + self.config.discord_channel_id + "/messages"
             headers = {"Authorization": "Bot " + self.config.discord_token}
-            sent = self.api("POST", base, headers=headers,
-                            json={"content": brief, "allowed_mentions": {"parse": [], "replied_user": False}})
+            payload = {"content": brief, "allowed_mentions": {"parse": [], "replied_user": False}}
+            if artifact is not None:
+                sent = self.api(
+                    "POST", base, headers=headers, data={"payload_json": json.dumps(payload)},
+                    files={"files[0]": (ATTACHMENT_NAME, artifact.data, "text/html")})
+                if not _attachment_verified(sent, artifact):
+                    raise DeliveryError("discord_attachment_unverified")
+            else:
+                sent = self.api("POST", base, headers=headers, json=payload)
             identifier = sent.get("id")
             if (not isinstance(identifier, str) or not re.fullmatch(r"[1-9]\d{16,19}", identifier)
                     or sent.get("channel_id") != self.config.discord_channel_id or sent.get("content") != brief):
@@ -343,6 +442,8 @@ class _Session:
             if (actual.get("id") != identifier or actual.get("channel_id") != self.config.discord_channel_id
                     or actual.get("content") != brief):
                 raise DeliveryError("discord_readback_invalid")
+            if artifact is not None and not _attachment_verified(actual, artifact):
+                raise DeliveryError("discord_attachment_unverified")
             return ChannelReceipt("discord", identifier, "independently-read-back")
         except DeliveryError as exc:
             return ChannelReceipt("discord", None, "unconfirmed", exc.code)
@@ -363,12 +464,18 @@ def build_brief(artifact: ReportArtifact, hosted: HostedReport) -> str:
 def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None = None,
                    transport: httpx.BaseTransport | None = None, resolver: Resolver = resolve_public_dns,
                    poll_attempts: int = 30, poll_interval: float = 1.0,
-                   sleep: Callable[[float], None] = time.sleep) -> DeliveryResult:
+                   sleep: Callable[[float], None] = time.sleep,
+                   state_path: str | Path | None = None) -> DeliveryResult:
     """Require verified hosting and BOTH channels. Raises on any partial delivery.
 
     An exception with .result records per-channel outcomes; Telegram's official
     sendMessage receipt is not an independent message readback. No send retries.
     transport/resolver/sleep injection is for deterministic protocol tests only.
+
+    ``state_path`` records what was delivered. Re-running with byte-identical
+    content re-hosts and verifies the bytes, then reports the previous
+    confirmation instead of announcing the same report twice; a changed
+    artifact always notifies.
     """
     config = DeliveryConfig.from_env(environ)
     artifact = load_artifact(export_dir)
@@ -379,9 +486,17 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
             session = _Session(config, pinned, client)
             hosted = session.host(artifact, poll_attempts, poll_interval, sleep)
             brief = build_brief(artifact, hosted)
-            result = DeliveryResult(hosted, brief, session.telegram(brief), session.discord(brief))
+            already = load_receipts(state_path).get(artifact.sha256)
+            if already and already.get("telegram") and already.get("discord"):
+                return DeliveryResult(
+                    hosted, brief,
+                    ChannelReceipt("telegram", already["telegram"], "previously-confirmed"),
+                    ChannelReceipt("discord", already["discord"], "previously-confirmed"))
+            result = DeliveryResult(hosted, brief, session.telegram(brief, artifact),
+                                     session.discord(brief, artifact))
             if not result.success:
                 raise DeliveryError("channel_failure", result=result)
+            save_receipts(state_path, artifact, result)
             return result
     except DeliveryError:
         raise

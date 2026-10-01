@@ -40,7 +40,7 @@ def _fingerprint(value, field=None):
                 if k not in {"created", "created_at", "updated", "updated_at", "checked_at", "release_ts", "timestamp", "uptime_24h", "success_rate", "avg_latency_ms"}}
     if isinstance(value, list):
         normalized = [_fingerprint(v) for v in value]
-        if field in {"input_modalities", "output_modalities", "supported_parameters", "supported_endpoint_types", "tags", "supported_voices"}:
+        if field in {"input_modalities", "output_modalities", "supported_parameters", "supported_endpoint_types", "tags", "supported_voices", "supported_efforts"}:
             return sorted(normalized)
         return normalized
     return value
@@ -62,9 +62,10 @@ def _item(namespace, identifier, headline, source, url, properties, types, **evi
 def _openrouter_model(row):
     properties = _pick(row, ("id", "name", "description", "pricing", "context_length",
                              "architecture", "supported_parameters", "top_provider", "canonical_slug", "hugging_face_id",
-                             "per_request_limits", "default_parameters", "reasoning", "supported_voices", "created"))
+                             "per_request_limits", "default_parameters", "reasoning", "supported_voices", "created",
+                             "knowledge_cutoff", "expiration_date", "alias_target", "links"))
     return _item("openrouter:model", row["id"], row.get("name") or row["id"],
-                 "openrouter-models", "https://openrouter.ai/" + quote(row["id"], safe="/"),
+                 "openrouter-models", "https://openrouter.ai/" + quote(row["id"], safe="/:"),
                  properties, _project_types(row), catalog_url=OPENROUTER_MODELS)
 
 
@@ -84,17 +85,19 @@ def _unorouter_model(row):
     types = capabilities.intersection({"text", "tools", "reasoning", "audio", "video", "embeddings"})
     if row.get("type") in {"text", "audio", "video", "embeddings"}:
         types.add(row["type"])
+    if row.get("type") == "embedding" or "embedding" in capabilities:
+        types.add("embeddings")
     if "vision" in capabilities:
         types.update({"vision", "multimodal"})
     if row.get("type") == "image":
         types.add("image-generation")
     pricing = _pick(row, ("input_price", "output_price", "fixed_price", "is_fixed_price",
-                          "original_input_price", "original_output_price"))
+                          "original_input_price", "original_output_price", "original_fixed_price"))
     properties = _pick(row, ("model_name", "vendor", "vendor_id", "type", "is_free", "online",
-                             "supported_endpoint_types"))
+                             "supported_endpoint_types", "chat", "release_ts"))
     properties.update({"tags": sorted(tags), "pricing": pricing})
     return _item("unorouter:model", row["model_name"], row["model_name"], "unorouter-models",
-                 "https://unorouter.com/en/models/" + quote(row["model_name"], safe=""),
+                 "https://unorouter.com/en/models/" + quote(row["model_name"], safe=":"),
                  properties, sorted(types), catalog_url=UNOROUTER_CATALOG,
                  pricing_units="USD per million tokens (input/output); fixed price per request")
 
@@ -159,9 +162,29 @@ def _validate_row(row, identifier_field):
             value = limits.get(key)
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError("Invalid context")
+    for key in ("is_free", "online", "chat", "is_fixed_price"):
+        if row.get(key) is not None and type(row[key]) is not bool:
+            raise ValueError("Invalid catalog flag")
+    tags = row.get("tags")
+    if tags is not None and not (isinstance(tags, str) or (
+            isinstance(tags, list) and all(isinstance(t, str) for t in tags))):
+        raise ValueError("Invalid catalog tags")
     pricing = row.get("pricing") or {}
-    for values, fields in ((pricing, ("prompt", "completion", "request", "image", "web_search", "input_cache_read", "input_cache_write")),
-                           (row, ("input_price", "output_price", "fixed_price", "original_input_price", "original_output_price"))):
+    price_fields = ("prompt", "completion", "request", "image", "web_search", "input_cache_read",
+                    "input_cache_write", "image_output", "image_token", "audio", "audio_output",
+                    "input_cache_write_1h", "internal_reasoning", "input_audio_cache")
+    overrides = pricing.get("overrides")
+    if overrides is not None and (not isinstance(overrides, list) or
+                                  not all(isinstance(tier, dict) for tier in overrides)):
+        raise ValueError("Invalid pricing tiers")
+    for tier in overrides or []:
+        threshold = tier.get("min_prompt_tokens")
+        if threshold is not None and (type(threshold) is not int or threshold < 0):
+            raise ValueError("Invalid pricing threshold")
+    price_objects = [(pricing, price_fields)] + [(tier, price_fields) for tier in overrides or []]
+    price_objects.append((row, ("input_price", "output_price", "fixed_price", "original_input_price",
+                                "original_output_price", "original_fixed_price")))
+    for values, fields in price_objects:
         for key in fields:
             value = values.get(key)
             if value is None:
@@ -200,29 +223,66 @@ async def _fetch_source(client, name, url, container, parser, secrets=(), **requ
         rows = payload.get(container)
         if not isinstance(rows, list) or not rows:
             return [], _source(name, url, error="Empty or invalid catalog list")
-        items, invalid = [], 0
+        items, invalid, duplicates, seen = [], 0, 0, set()
         identifier_field = "model_name" if container == "models" else "slug" if name == "openrouter-providers" else "id"
         for row in rows:
             try:
                 _validate_row(row, identifier_field)
                 if any(secret in row[identifier_field] for secret in secrets):
                     raise ValueError("Credential-bearing identifier")
-                items.append(parser(_sanitize(row, secrets)))
+                item = parser(_sanitize(row, secrets))
+                if item["id"] in seen:
+                    duplicates += 1
+                    continue
+                seen.add(item["id"])
+                items.append(item)
             except (KeyError, TypeError, AttributeError, ValueError):
                 invalid += 1
         links = payload.get("links")
         total = payload.get("total_count")
         if total is None and isinstance(payload.get("counts"), dict):
             total = payload["counts"].get("models")
-        incomplete = (isinstance(links, dict) and bool(links.get("next"))) or (type(total) is int and total > len(rows))
-        status = "partial" if (invalid or incomplete) and items else "ok" if items else "error"
+        has_more = isinstance(links, dict) and bool(links.get("next"))
+        incomplete = has_more or (type(total) is int and total > len(rows))
+        inconsistent = total is not None and (type(total) is not int or total < len(rows))
+        status = "partial" if (invalid or duplicates or incomplete or inconsistent) and items else "ok" if items else "error"
         errors = []
         if invalid:
             errors.append(f"Ignored {invalid} invalid catalog entries")
+        if duplicates:
+            errors.append(f"Ignored {duplicates} duplicate catalog entries")
         if incomplete:
             errors.append("Incomplete catalog response; pagination not followed")
+        if inconsistent:
+            errors.append("Inconsistent declared catalog total")
         error = "; ".join(errors) or None
-        return items, _source(name, url, status, len(items), error)
+        source = _source(name, url, status, len(items), error)
+        source["coverage"] = {
+            "scope": "key-accessible" if name == "unorouter-accessible-models" else
+                     "local-aggregated" if name == "freellmapi-models" else "public-catalog",
+            "returned_count": len(rows), "accepted_count": len(items),
+            "invalid_count": invalid, "duplicate_count": duplicates,
+            "declared_total": total if type(total) is int and total >= 0 else None,
+            "has_more": bool(has_more), "pagination_followed": False,
+        }
+        if name == "openrouter-models":
+            source["coverage"]["output_modalities"] = "all"
+        # Collection time is not origin freshness. Persist bounded numeric cache
+        # diagnostics, never arbitrary response headers or credential-bearing text.
+        age_text = response.headers.get("age", "").strip()
+        age = int(age_text) if age_text.isascii() and age_text.isdigit() and len(age_text) <= 10 else None
+        max_age = None
+        for directive in response.headers.get("cache-control", "").split(","):
+            key, sep, value = directive.strip().partition("=")
+            value = value.strip().strip('"')
+            if key.lower() == "max-age" and sep and value.isascii() and value.isdigit() and len(value) <= 10:
+                max_age = int(value)
+        source["coverage"].update({
+            "http_cache_age_seconds": age, "http_cache_max_age_seconds": max_age,
+            "http_cache_freshness": "unknown" if age is None or max_age is None else
+                                    "exceeds-max-age" if age >= max_age else "within-max-age",
+        })
+        return items, source
     except httpx.HTTPStatusError as exc:
         return [], _source(name, url, error=f"HTTP {exc.response.status_code}")
     except httpx.TimeoutException:

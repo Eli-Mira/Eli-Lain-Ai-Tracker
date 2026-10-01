@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import hashlib
 import json
 import tempfile
 import os
@@ -371,10 +372,16 @@ class NewsTracker:
 
         items = await self.fetch_all()
         processed_items, context = await self.process(items)
+        # A restored cache replays previously stored stories. Only genuinely new
+        # observations may raise a breaking alert, otherwise every daily run
+        # re-sends the same headline as breaking news.
+        known_urls = self.sqlite.existing_urls(processed_items)
+        new_items = [item for item in processed_items if str(item.url) not in known_urls]
+        context["replayed_count"] = len(processed_items) - len(new_items)
         inserted = self.sqlite.save_items(processed_items)
         context["inserted"] = inserted
 
-        breaking_items, regular_items = self._split_breaking_news(processed_items)
+        breaking_items, regular_items = self._split_breaking_news(new_items)
         context["breaking_count"] = len(breaking_items)
         context["regular_count"] = len(regular_items)
 
@@ -440,6 +447,33 @@ class NewsTracker:
             # Advisory metadata-only views; never replace the broad inventory.
             from intel_sources.recommendations import evaluate_projects
             evaluated = evaluate_projects(intel["items"], now=datetime.now(timezone.utc))
+            # Persist the evaluation used by this report, not a one-off audit.
+            # This is internal state only; the public exporter has its own boundary.
+            evaluation_path = self.data_dir / "project_evaluations.json"
+            evaluation_artifact = {
+                "result": evaluated,
+                "discovery_snapshot": intel["items"],
+                "provenance": {
+                    "source_inventory_count": len(intel["items"]),
+                    "input_state_sha256": hashlib.sha256(
+                        self.intel_store.path.read_bytes() if self.intel_store.path.exists()
+                        else json.dumps(intel, sort_keys=True).encode("utf-8")).hexdigest(),
+                    "generated_by": "main.NewsTracker.generate_report",
+                },
+            }
+            temporary_evaluation = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                        dir=evaluation_path.parent, prefix=".project_evaluations-",
+                        suffix=".tmp", delete=False) as handle:
+                    temporary_evaluation = Path(handle.name)
+                    json.dump(evaluation_artifact, handle, ensure_ascii=False)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary_evaluation, evaluation_path)
+            finally:
+                if temporary_evaluation is not None:
+                    temporary_evaluation.unlink(missing_ok=True)
             reviewed = {entry["id"] for group in evaluated["groups"].values()
                         for name in ("shortlist", "deferred", "excluded") for entry in group[name]}
             recommendations = {
@@ -694,9 +728,10 @@ def main(argv: list[str] | None = None) -> int:
             if main(["export-public", "--data-dir", args.data_dir,
                      "--public-dir", args.public_dir, "--theme", args.theme]):
                 return 1
-        from intel_sources.report_delivery import DeliveryError, deliver_report
+        from intel_sources.report_delivery import (ATTACHMENT_NAME, DeliveryError, deliver_report)
         try:
-            result = deliver_report(args.public_dir)
+            result = deliver_report(args.public_dir,
+                                    state_path=Path(args.data_dir) / "delivery_receipts.json")
         except DeliveryError as error:
             # Report the safe code only; never echo tokens, hosts internals or paths.
             print(json.dumps({"delivered": False, "code": error.code}, sort_keys=True), file=sys.stderr)
@@ -705,6 +740,7 @@ def main(argv: list[str] | None = None) -> int:
             "delivered": result.success,
             "url": result.hosted.url,
             "sha256": result.hosted.sha256,
+            "attachment": ATTACHMENT_NAME,
             "telegram": result.telegram.confirmation,
             "discord": result.discord.confirmation,
         }, sort_keys=True))

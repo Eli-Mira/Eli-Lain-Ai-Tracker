@@ -167,6 +167,8 @@
 </style>
 <style id="intel-extensions">
   /* Additive extension rules only; original locked style block is unchanged. */
+  .tracker p.meta { color: var(--text); }
+  .tracker .public-metadata { font-size: 13px; padding-left: 20px; margin: 6px 0; }
   .tracker .item-line { flex-wrap: wrap; }
   .tracker .item { overflow-wrap: anywhere; }
   .tracker .evidence { font-size: 13px; margin-top: 6px; }
@@ -194,6 +196,7 @@
     </div>
   </header>
 
+{% set change_digest %}
   <!-- Extension: change-first digest; original inventory markup follows. -->
   <section class="tracker changes" id="changes" aria-label="Changes since previous run">
     <div class="section-head"><span class="cmd">$ changes-since-last-run</span></div>
@@ -212,36 +215,14 @@
   </section>
 
 
-  <section class="tracker actions" id="actions" aria-label="Recommended actions">
-    <div class="section-head"><span class="cmd">$ next-actions</span></div>
-    <ul class="items">
-      {% for item in action_items %}
-      <li class="item">
-        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.title) }}</span><span class="status">[{{ item.priority }}]</span></div>
-        <div class="item-desc">Reason: {{ item.reason }}</div>
-        <div class="item-desc">Action: {{ item.action }}</div>
-      </li>
-      {% else %}<li class="item empty-state">No actions supplied.</li>{% endfor %}
-    </ul>
-  </section>
-
-  <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
-    <div class="section-head"><span class="cmd">$ source-health</span></div>
-    <p class="meta">Collection health and coverage; not provider availability.</p>
-    <ul class="items">
-      {% for item in source_items %}
-      <li class="item">
-        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.name) }}</span><span class="status">[{{ item.status|default('unverified', true) }}]</span></div>
-        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · {{ item.item_count|default('unknown') }} items · Coverage: {{ item.coverage|default('not supplied', true) }}</div>
-        {% if item.error %}<div class="item-desc">Error: {{ item.error }}</div>{% endif %}
-      </li>
-      {% else %}<li class="item empty-state">Source health not supplied — coverage unverified.</li>{% endfor %}
-    </ul>
-  </section>
-
+{% endset %}
+{% if not public_export and (change_items or baseline) %}{{ change_digest }}{% endif %}
   <!-- Original provider section, extended with independent probe metadata. -->
   <section class="tracker api" id="providers" aria-label="Provider inventory">
     <div class="section-head"><span class="cmd">$ free-api-tracker</span></div>
+    {% if public_export %}
+    <p class="meta">Provider observations excluded from this public export — not assessed.</p>
+    {% else %}
     <p class="meta">{{ api_items|length }} providers tracked · status is not a freshness claim</p>
     <ul class="items">
       {% for item in api_items %}
@@ -256,6 +237,93 @@
         {{ evidence_details(item.evidence|default([], true)) }}
       </li>
       {% else %}<li class="item empty-state">No providers supplied.</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section class="tracker news" id="news" aria-label="AI news inventory">
+    <div class="section-head"><span class="cmd">$ ai-news-tracker</span></div>
+    {% if public_export %}
+    <p class="meta">News excluded from this public export — not assessed.</p>
+    {% else %}
+    <p class="meta">{{ news_items|length }} stories</p>
+    <ul class="items">
+      {% for item in news_items %}
+      <li class="item">
+        <div class="item-line">
+          <span class="item-name">{{ safe_link(item.url, item.headline) }}</span>
+        </div>
+        <div class="item-desc">{{ item.summary }} <span class="item-source">— {{ item.source }}</span></div>
+      </li>
+      {% else %}<li class="item empty-state">No stories supplied.</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <!-- Extension: tools and model discoveries share the discovery contract. -->
+  <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
+    <div class="section-head"><span class="cmd">$ github-discovery</span></div>
+    <p class="meta">{{ tool_items|length }} tool / model discoveries</p>
+    <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
+      <label for="discovery-search">Search discoveries</label>
+      <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list" disabled>
+      <label for="discovery-project">Project type</label>
+      <select id="discovery-project" aria-controls="discovery-list" disabled><option value="">All project types</option></select>
+      <label for="discovery-source">Discovery source</label>
+      <select id="discovery-source" aria-controls="discovery-list" disabled><option value="">All sources</option></select>
+    </div>
+    <p class="meta" id="discovery-result-count" role="status" aria-live="polite">{{ tool_items|length }} of {{ tool_items|length }} discoveries shown</p>
+    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
+    <noscript><p class="meta">Filters require JavaScript; all discoveries are shown below.</p></noscript>
+    <ul class="items" id="discovery-list">
+      {% for item in tool_items %}
+      <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="item-source">{{ item.source }}</span></div>
+        <div class="item-desc">{{ item.summary }}</div>
+        {% if item.public_metadata %}
+        <ul class="public-metadata evidence-list" aria-label="Public source metadata">
+          {% for field in item.public_metadata %}<li>{{ field.label }}: {{ field.value }}</li>{% endfor %}
+        </ul>
+        {% elif public_export %}
+        <div class="item-desc public-metadata-unavailable">Structured public metadata not supplied in this saved observation — consult the linked source.</div>
+        {% endif %}
+        <div class="item-source">ID: {{ item.id|default('not supplied', true) }} · Project types: {{ item.project_types|default([], true)|join(', ') or 'not supplied' }}</div>
+        <div class="item-source">Change: {{ item.change_type|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
+        {{ evidence_details(item.evidence|default([], true)) }}
+      </li>
+      {% else %}<li class="item empty-state">No discoveries supplied.</li>{% endfor %}
+    </ul>
+  </section>
+
+{% if not public_export %}
+{% if not (change_items or baseline) %}{{ change_digest }}{% endif %}
+
+
+  <section class="tracker actions" id="actions" aria-label="Recommended actions">
+    <div class="section-head"><span class="cmd">$ next-actions</span></div>
+    <ul class="items">
+      {% for item in action_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.title) }}</span><span class="status">[{{ item.priority }}]</span></div>
+        <div class="item-desc">Reason: {{ item.reason }}</div>
+        <div class="item-desc">Action: {{ item.action }}</div>
+      </li>
+      {% else %}<li class="item empty-state">No actions supplied.</li>{% endfor %}
+    </ul>
+  </section>
+
+{% endif %}
+  <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
+    <div class="section-head"><span class="cmd">$ source-health</span></div>
+    <p class="meta">Collection health and coverage; not provider availability.</p>
+    <ul class="items">
+      {% for item in source_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.name) }}</span><span class="status">[{{ item.status|default('unverified', true) }}]</span></div>
+        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · {{ item.item_count|default('unknown') }} items · Coverage: {{ item.coverage|default('not supplied', true) }}</div>
+        {% if item.error %}<div class="item-desc">Error: {{ item.error }}</div>{% endif %}
+      </li>
+      {% else %}<li class="item empty-state">Source health not supplied — coverage unverified.</li>{% endfor %}
     </ul>
   </section>
 
@@ -292,49 +360,6 @@
     {% endfor %}
   </section>
   {% endif %}
-
-  <!-- Extension: tools and model discoveries share the discovery contract. -->
-  <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
-    <div class="section-head"><span class="cmd">$ github-discovery</span></div>
-    <p class="meta">{{ tool_items|length }} tool / model discoveries</p>
-    <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
-      <label for="discovery-search">Search discoveries</label>
-      <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list">
-      <label for="discovery-project">Project type</label>
-      <select id="discovery-project" aria-controls="discovery-list"><option value="">All project types</option></select>
-      <label for="discovery-source">Discovery source</label>
-      <select id="discovery-source" aria-controls="discovery-list"><option value="">All sources</option></select>
-    </div>
-    <p class="meta" id="discovery-result-count" role="status" aria-live="polite">{{ tool_items|length }} of {{ tool_items|length }} discoveries shown</p>
-    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
-    <noscript><p class="meta">Filters require JavaScript; all discoveries are shown below.</p></noscript>
-    <ul class="items" id="discovery-list">
-      {% for item in tool_items %}
-      <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
-        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="item-source">{{ item.source }}</span></div>
-        <div class="item-desc">{{ item.summary }}</div>
-        <div class="item-source">ID: {{ item.id|default('not supplied', true) }} · Project types: {{ item.project_types|default([], true)|join(', ') or 'not supplied' }}</div>
-        <div class="item-source">Change: {{ item.change_type|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
-        {{ evidence_details(item.evidence|default([], true)) }}
-      </li>
-      {% else %}<li class="item empty-state">No discoveries supplied.</li>{% endfor %}
-    </ul>
-  </section>
-
-  <section class="tracker news" id="news" aria-label="AI news inventory">
-    <div class="section-head"><span class="cmd">$ ai-news-tracker</span></div>
-    <p class="meta">{{ news_items|length }} stories</p>
-    <ul class="items">
-      {% for item in news_items %}
-      <li class="item">
-        <div class="item-line">
-          <span class="item-name">{{ safe_link(item.url, item.headline) }}</span>
-        </div>
-        <div class="item-desc">{{ item.summary }} <span class="item-source">— {{ item.source }}</span></div>
-      </li>
-      {% else %}<li class="item empty-state">No stories supplied.</li>{% endfor %}
-    </ul>
-  </section>
 
   <footer>close the world, open the next tab · generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
 
@@ -382,6 +407,7 @@
   project.addEventListener('change', applyFilters);
   source.addEventListener('change', applyFilters);
   applyFilters();
+  [search, project, source].forEach(control => { control.disabled = false; });
 })();
 </script>
 </body>
