@@ -99,3 +99,10 @@ Historical post-fix full suite: **561 passed in 15.49s, no xfails**. Commit `dae
 - Original scope/evaluation-persistence defects were fixed in `dae3eba`; do not repeat historical false pending/active-fruit claims.
 
 No claim of zero bugs or release readiness until all blocking gates are closed with evidence.
+
+## Recovery pass after four orphaned workers — 2026-10-01
+- All four `deleg_ccc1157f` workers ended with "no reply"; none returned a summary. Their filesystem edits were treated as unverified and re-measured by the parent. Full detail: `docs/release-orphan-worker-recovery.md`.
+- Parent caught one real over-blocking defect in the new public URL guard (it deleted three legitimate Skills.sh rows because their names contain `sk-`/`password`) and fixed it with a shape-based credential test.
+- Real artifact re-read by the parent: **1,894,744 bytes**, sha256 `45364502370e271ae9d40a71bf4613a0afc25ac8ef41bc7c9a6b7d73aa3672f4`, `load_artifact()` OK, 49/533/112/439/125 rows per source matching DOM counts, 19 tilde aliases restored, 1,259 typed metadata blocks, 38 explicit "not supplied", no fruit-slicer, no remote dependencies, under the 4 MB delivery ceiling.
+- Full suite **698 passed, no xfails**, exit 0. Commit `7869a97` pushed; CI run `36856918737` started on it.
+- **Still not live-verified:** provider binding pins, news/summary validation, Skills.sh detail selection. Regression-tested only. `Catalog expiration date` renders 0 times because the saved state predates the adapter retaining those fields; a fresh discovery run is required.
