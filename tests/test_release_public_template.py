@@ -131,11 +131,15 @@ def test_typed_metadata_advertised_inventory_matches_reachable_typed_rows(tmp_pa
     assert soup.select('.public-metadata-unavailable') and not soup.select('.public-metadata')
 
 
-def test_public_layout_retains_original_sections_first_and_does_not_claim_unchecked_changes(tmp_path):
+def test_public_layout_keeps_evaluated_shortlist_first_and_does_not_claim_unchecked_changes(tmp_path):
     artifact = render_export(tmp_path)
     soup = BeautifulSoup(artifact.read_text(encoding='utf-8'), 'html.parser')
     sections = [s.get('id') for s in soup.select('section.tracker')]
-    assert sections[:3] == ['providers', 'news', 'discoveries']
+    # The reviewed project decision is the first thing a consumer reads; the raw
+    # catalog is retained underneath, never in place of it.
+    assert sections[0] == 'project-shortlists'
+    assert sections.index('project-shortlists') < sections.index('discoveries')
+    assert sections[1:4] == ['providers', 'news', 'discoveries']
     assert 'changes' not in sections and 'actions' not in sections
     assert 'No material changes detected' not in soup.text
     assert 'Provider observations excluded from this public export' in soup.select_one('#providers').text
@@ -231,6 +235,26 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
     page.on('console', lambda msg: console_errors.append(msg.text) if msg.type == 'error' else None)
     try:
         page.goto(artifact.as_uri(), wait_until='load')
+        # Measured before any interaction, so auto-scroll cannot mask a layout
+        # regression: the evaluated shortlist is the first thing on screen and the
+        # raw catalog sits below it. This is the same 'no deep scrolling for the
+        # main experience' intent the old `#discoveries` top < 900 assertion
+        # covered, re-anchored to the section that is now first; the catalog is
+        # intentionally far down because it starts collapsed.
+        assert page.evaluate('scrollY') == 0
+        assert page.locator('#project-shortlists').evaluate('(x)=>x.getBoundingClientRect().top') < 900
+        assert page.locator('#project-shortlists').evaluate('(x)=>x.getBoundingClientRect().top') < \
+               page.locator('#discoveries').evaluate('(x)=>x.getBoundingClientRect().top')
+        # Nothing in a public report may start expanded.
+        assert page.locator('details[open]').count() == 0
+        # Collapsed by default: the status must point at the disclosure rather
+        # than claim its rows are already on screen.
+        assert page.locator('#discovery-result-count').text_content() == (
+            '5 discoveries collected \u2014 open the inventory below to browse and filter')
+        # The catalog is a collapsed archive by default; opening it must reveal
+        # every collected row, never a filtered subset.
+        assert page.locator('.discovery-item:visible').count() == 0
+        page.locator('#discovery-inventory > summary').click()
         assert page.locator('.discovery-item:visible').count() == len(state['items'])
         assert page.locator('.public-metadata').count() == len(state['items'])
         assert page.locator('.wrap').evaluate('(x)=>getComputedStyle(x).maxWidth') == '640px'
@@ -238,20 +262,26 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
         assert page.locator('body').evaluate('(x)=>getComputedStyle(x).backgroundColor') == 'rgb(5, 7, 10)'
         assert page.locator('h1').evaluate('(x)=>getComputedStyle(x).color') == 'rgb(111, 255, 233)'
         assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
-        assert page.locator('#discoveries').evaluate('(x)=>x.getBoundingClientRect().top') < 900
         count = page.locator('#discovery-result-count')
         colors = count.evaluate('(x)=>[getComputedStyle(x).color,getComputedStyle(document.body).backgroundColor]')
         assert contrast_ratio(*colors) >= 4.5, colors
-        assert count.text_content() == '5 of 5 discoveries shown'
+        if javascript:
+            # The controller reports the open, unfiltered archive.
+            assert count.text_content() == '5 discoveries, no filter applied'
+        else:
+            # Without the controller the static line stands; it never claims
+            # rows are on screen, which is the truthful thing to say.
+            assert count.text_content() == (
+                '5 discoveries collected \u2014 open the inventory below to browse and filter')
         if javascript:
             for row in state['items']:
                 page.get_by_label('Discovery source', exact=True).select_option(row['source'])
                 assert page.locator('.discovery-item:visible').count() == 1
-                assert count.text_content() == '1 of 5 discoveries shown'
+                assert count.text_content() == '1 of 5 discoveries match the filters'
                 assert page.locator('.discovery-item:visible .public-metadata').count() == 1
             page.get_by_label('Search discoveries', exact=True).fill('no-match-zzzz')
             assert page.locator('#discovery-empty').is_visible()
-            assert count.text_content() == '0 of 5 discoveries shown'
+            assert count.text_content() == '0 of 5 discoveries match the filters'
             page.get_by_label('Search discoveries', exact=True).fill('')
             page.get_by_label('Discovery source', exact=True).select_option('')
             page.get_by_label('Project type', exact=True).select_option('tools')
@@ -265,13 +295,20 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
         else:
             for control in ['#discovery-search', '#discovery-project', '#discovery-source']:
                 assert page.locator(control).is_disabled(), control
-            assert page.get_by_text('Filters require JavaScript; all discoveries are shown below.', exact=True).is_visible()
+            assert page.get_by_text('Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.', exact=True).is_visible()
         details = page.locator('details')
-        assert details.evaluate_all('''(xs)=>{for(const d of xs){const s=d.querySelector(':scope > summary');s.click();if(!d.open)throw Error('open');s.click();if(d.open)throw Error('close');}return xs.length;}''') == details.count()
-        details.first.locator(':scope > summary').click()
-        assert details.first.get_attribute('open') is not None
-        assert OBSERVED in details.first.inner_text()
-        details.first.locator(':scope > summary').click()
+        # Every disclosure still toggles both ways. Default-closed is asserted
+        # above on a freshly loaded page; the inventory was reopened since.
+        assert details.evaluate_all('''(xs)=>{for(const d of xs){const s=d.querySelector(':scope > summary');if(d.open)s.click();if(d.open)throw Error('close');s.click();if(!d.open)throw Error('open');s.click();if(d.open)throw Error('close');}return xs.length;}''') == details.count()
+        # The shortlist's own deferred/excluded disclosures now come first in the
+        # document, so the evidence disclosure is addressed inside the inventory.
+        # The toggle sweep above leaves every disclosure closed, including the
+        # inventory archive, so reopen it before inspecting an evidence row.
+        page.locator('#discovery-inventory > summary').click()
+        evidence = page.locator('#discoveries details.evidence').first
+        evidence.locator(':scope > summary').click()
+        assert evidence.get_attribute('open') is not None
+        assert OBSERVED in evidence.inner_text()
         assert 'PRIVATE_' not in page.locator('body').inner_text()
         assert page.locator('[onerror], [onclick], img, iframe, script[src]').count() == 0
         for href in page.locator('a[href]').evaluate_all('(xs)=>xs.map(x=>x.getAttribute("href"))'):

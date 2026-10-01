@@ -227,7 +227,8 @@ def test_browser_filters_intersect_reset_and_evidence_is_safe(browser, theme, wi
         source = page.get_by_label("Discovery source", exact=True)
         rows = page.locator("#discoveries .discovery-item:visible")
         assert rows.count() == 3
-        assert page.locator("#discovery-result-count").text_content() == "3 of 3 discoveries shown"
+        assert page.locator("#discovery-result-count").text_content() == (
+            "3 discoveries, no filter applied" if theme == "lain" else RESULT_COUNT["default"].format(3, 3))
         search.fill("etl")
         assert rows.count() == 1
         project.select_option("local-llm")
@@ -246,8 +247,8 @@ def test_browser_filters_intersect_reset_and_evidence_is_safe(browser, theme, wi
         assert page.evaluate("window.pwned || false") is False
         assert page.locator("#discoveries img").count() == 0
         project.select_option("")
-        page.locator("#discoveries details summary").first.click()
-        assert page.locator("#discoveries details").first.get_attribute("open") is not None
+        page.locator("#discoveries details.evidence summary").first.click()
+        assert page.locator("#discoveries details.evidence").first.get_attribute("open") is not None
         assert page.get_by_text("HTTP 200", exact=False).is_visible()
         if theme == "lain":
             assert page.locator("body").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(5, 7, 10)"
@@ -260,6 +261,15 @@ def test_browser_filters_intersect_reset_and_evidence_is_safe(browser, theme, wi
         assert not errors
     finally:
         page.close()
+
+
+# The default theme keeps its original wording; the Lain report states the
+# filter status truthfully, since its catalog starts collapsed.
+RESULT_COUNT = {"default": "{} of {} discoveries shown"}
+NO_JS_NOTICE = {
+    "lain": "Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.",
+    "default": "Filters require JavaScript; all discoveries are shown below.",
+}
 
 
 def test_template_syntax_errors_are_not_hidden_by_default_fallback(tmp_path, monkeypatch):
@@ -315,7 +325,9 @@ def test_browser_empty_inventory_and_javascript_disabled_fallback(browser, theme
     try:
         page.set_content(render(theme), wait_until="load")
         assert page.get_by_text("No discoveries supplied.", exact=True).is_visible()
-        assert page.locator("#discovery-result-count").text_content() == "0 of 0 discoveries shown"
+        assert page.locator("#discovery-result-count").text_content() == (
+            "0 discoveries, no filter applied"
+            if theme == "lain" else RESULT_COUNT["default"].format(0, 0))
         assert not page.locator("#discovery-empty").is_visible()
         assert page.locator("script[src], link[rel=stylesheet]").count() == 0
         assert not errors
@@ -327,6 +339,6 @@ def test_browser_empty_inventory_and_javascript_disabled_fallback(browser, theme
         page.set_content(render(theme, tool_items=[dict(headline="Visible without JS", source="GitHub",
                             summary="Static fallback", url="https://example.org")]), wait_until="load")
         assert page.get_by_text("Visible without JS", exact=True).is_visible()
-        assert page.get_by_text("Filters require JavaScript; all discoveries are shown below.", exact=True).is_visible()
+        assert page.get_by_text(NO_JS_NOTICE[theme], exact=True).is_visible()
     finally:
         context.close()

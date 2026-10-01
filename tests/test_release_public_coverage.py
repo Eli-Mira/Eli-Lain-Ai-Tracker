@@ -273,6 +273,8 @@ def test_real_saved_inventory_full_projection_reaches_offline_dom(public_browser
         page.on('console', lambda message: errors.append(message.text) if message.type == 'error' else None)
         page.goto(artifact.as_uri(), wait_until='load')
         assert Counter(page.locator('.discovery-item').evaluate_all('(rows) => rows.map(r => r.dataset.source)')) == expected
+        assert page.locator('.discovery-item:visible').count() == 0
+        page.locator('#discovery-inventory > summary').click()
         assert page.locator('.discovery-item:visible').count() == sum(expected.values())
         assert page.locator('.public-metadata li').count() == sum(len(r.get('public_metadata', [])) for r in payload['tool_items'])
         coverage = page.locator('#source-health').inner_text()

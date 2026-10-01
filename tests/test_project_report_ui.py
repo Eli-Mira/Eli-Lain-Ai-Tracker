@@ -102,7 +102,7 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     payload = build_public_payload(state, now=NOW, max_items_per_source=25)
     public = tmp_path / "public" / "index.html"
     public.parent.mkdir()
-    public.write_text(LainReporter().render(**payload), encoding="utf-8")
+    public.write_text(LainReporter().render(**payload, public_export=True), encoding="utf-8")
     shortlists = {project: len(group["shortlist"]) for project, group in groups.items()}
     assert sum(shortlists.values()) > 0, "real inventory produced no reviewed shortlist candidates"
     assert "fruit-slicer" not in shortlists, "paused project leaked into active recommendations"
@@ -121,14 +121,24 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH"))
         try:
-            for path, exported, expected in ((internal, len(state["items"]), coverage["reviewed_count"]),
-                                             (public, len(payload["tool_items"]), payload["recommendation_coverage"]["reviewed_count"])):
+            for path, exported, expected, collapsed in (
+                    (internal, len(state["items"]), coverage["reviewed_count"], False),
+                    (public, len(payload["tool_items"]), payload["recommendation_coverage"]["reviewed_count"], True)):
                 context = browser.new_context(viewport={"width": 1440, "height": 900}, offline=True)
                 page = context.new_page()
                 requests, errors = [], []
                 page.on("request", lambda request: requests.append(request.url))
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(path.as_uri(), wait_until="load")
+                rows = page.locator("#discoveries .discovery-item")
+                assert rows.count() == exported, "a row was dropped from the report"
+                if collapsed:
+                    # Public consumer: the catalog is an archive, the decision is first.
+                    assert page.locator("#discoveries .discovery-item:visible").count() == 0
+                    assert page.locator("#project-shortlists").evaluate(
+                        "(x)=>x.getBoundingClientRect().top") < \
+                        page.locator("#discoveries").evaluate("(x)=>x.getBoundingClientRect().top")
+                    page.locator("#discovery-inventory > summary").click()
                 assert page.locator("#discoveries .discovery-item:visible").count() == exported
                 assert page.locator("#project-shortlists .project-group").count() == 3
                 assert page.locator("#recommendation-coverage").text_content().startswith(f"{expected} reviewed / ")

@@ -173,6 +173,9 @@
   .tracker .item { overflow-wrap: anywhere; }
   .tracker .evidence { font-size: 13px; margin-top: 6px; }
   .tracker .evidence summary { cursor: pointer; color: var(--text); }
+  .tracker .inventory { margin-top: 8px; }
+  .tracker .inventory summary { cursor: pointer; color: var(--text); }
+  .tracker .inventory[data-pinned="true"] > summary { color: var(--cyan); }
   .tracker .evidence-list { padding-left: 20px; }
   .tracker .evidence a { color: var(--text); }
   .discovery-filters { display: grid; gap: 6px; font-size: 13px; }
@@ -217,6 +220,44 @@
 
 {% endset %}
 {% if not public_export and (change_items or baseline) %}{{ change_digest }}{% endif %}
+
+{% set project_shortlists_view %}
+  <!-- Additive advisory view; the broad discovery inventory remains below.
+       Omitted entirely when no evaluated review is supplied, so a discovery-free
+       report never claims an empty or unsupplied project review. -->
+  {% if recommendation_groups %}
+  <section class="tracker recommendations" id="project-shortlists" aria-label="Evaluated project shortlists">
+    <div class="section-head"><span class="cmd">$ project-shortlists</span></div>
+    <p class="meta">Metadata-only suitability review. No installed integration tests; no auto-installation or execution. Discovery rank is not project fit.</p>
+    <p class="meta" id="recommendation-coverage">{{ recommendation_coverage.reviewed_count|default('not supplied') }} reviewed / {{ recommendation_coverage.discovery_count|default('not supplied') }} discovery candidates · {{ recommendation_coverage.inventory_count|default(tool_items|length) }} inventory rows · shortlist limit: {{ recommendation_coverage.shortlist_limit_per_project|default(4) }} per project. Broad inventory retained; leaderboards are not full catalogs.</p>
+    {% for project_id, group in recommendation_groups.items() %}
+    <div class="project-group" data-project="{{ project_id }}">
+      <h2 class="item-name">{{ group.project }}</h2>
+      {% for category in ['shortlist', 'deferred', 'excluded'] %}
+      {% if category == 'shortlist' %}<div class="item-source">Shortlist ({{ group[category]|length }})</div>{% else %}<details class="evidence"><summary>{{ category|capitalize }} ({{ group[category]|length }})</summary>{% endif %}
+      <ul class="items">
+        {% for item in group[category] %}
+        <li class="item recommendation-item" data-id="{{ item.id }}" data-decision="{{ category }}">
+          <div class="item-line"><span class="item-name">{{ safe_link(item.source_urls|first|default(''), item.headline|default(item.id, true)) }}</span><span class="status">[metadata-only · not integration-tested]</span></div>
+          <div class="item-desc">Reason: {{ item.reason }}</div>
+          <div class="item-desc">Constraints:</div><ul class="evidence-list">{% for constraint in item.constraints %}<li>{{ constraint }}</li>{% else %}<li>Not supplied — validate prerequisites.</li>{% endfor %}</ul>
+          <div class="item-source">Discovery: {{ item.freshness.discovery }} · Official metadata: {{ item.freshness.official_metadata }}</div>
+          <div class="item-source">Confidence: {{ item.confidence }} · {{ item.confidence_reason }}</div>
+          <div class="item-source">Cost: {{ item.cost|default('unknown', true) }} · License: {{ item.license|default('unknown', true) }} · Support: {{ item.support|default('unknown', true) }}</div>
+          <div class="item-desc">Next validation: {{ item.next_validation }}</div>
+          <details class="evidence"><summary>Provenance links</summary><ul class="evidence-list">{% for url in item.source_urls %}<li>{{ safe_link(url, url) }}</li>{% else %}<li>No public provenance supplied.</li>{% endfor %}</ul></details>
+        </li>
+        {% else %}<li class="item empty-state">No {{ category }} candidates in this bounded review.</li>{% endfor %}
+      </ul>
+      {% if category != 'shortlist' %}</details>{% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+{% endset %}
+
+{% if public_export %}{{ project_shortlists_view }}{% endif %}
   <!-- Original provider section, extended with independent probe metadata. -->
   <section class="tracker api" id="providers" aria-label="Provider inventory">
     <div class="section-head"><span class="cmd">$ free-api-tracker</span></div>
@@ -264,10 +305,14 @@
     {% endif %}
   </section>
 
+{% if not public_export %}{{ project_shortlists_view }}{% endif %}
+
   <!-- Extension: tools and model discoveries share the discovery contract. -->
   <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
     <div class="section-head"><span class="cmd">$ github-discovery</span></div>
-    <p class="meta">{{ tool_items|length }} tool / model discoveries</p>
+    <p class="meta" id="discovery-result-count" role="status" aria-live="polite" aria-controls="discovery-inventory">{{ tool_items|length }} discoveries collected &#8212; open the inventory below to browse and filter</p>
+    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
+    <noscript><p class="meta">Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.</p></noscript>
     <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
       <label for="discovery-search">Search discoveries</label>
       <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list" disabled>
@@ -276,9 +321,8 @@
       <label for="discovery-source">Discovery source</label>
       <select id="discovery-source" aria-controls="discovery-list" disabled><option value="">All sources</option></select>
     </div>
-    <p class="meta" id="discovery-result-count" role="status" aria-live="polite">{{ tool_items|length }} of {{ tool_items|length }} discoveries shown</p>
-    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
-    <noscript><p class="meta">Filters require JavaScript; all discoveries are shown below.</p></noscript>
+    <details id="discovery-inventory" class="inventory"{% if not public_export %} open{% endif %}>
+    <summary>Browse {% if recommendation_coverage and recommendation_coverage.inventory_count is defined %}complete exported inventory &#8212; {{ tool_items|length }} of {{ recommendation_coverage.inventory_count }} collected rows{% else %}the exported inventory &#8212; {{ tool_items|length }} collected rows, total collected count not supplied{% endif %}, not recommendations</summary>
     <ul class="items" id="discovery-list">
       {% for item in tool_items %}
       <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
@@ -297,6 +341,7 @@
       </li>
       {% else %}<li class="item empty-state">No discoveries supplied.</li>{% endfor %}
     </ul>
+    </details>
   </section>
 
 {% if not public_export %}
@@ -331,39 +376,7 @@
     </ul>
   </section>
 
-  <!-- Additive advisory view; the broad discovery inventory remains below.
-       Omitted entirely when no evaluated review is supplied, so a discovery-free
-       report never claims an empty or unsupplied project review. -->
-  {% if recommendation_groups %}
-  <section class="tracker recommendations" id="project-shortlists" aria-label="Evaluated project shortlists">
-    <div class="section-head"><span class="cmd">$ project-shortlists</span></div>
-    <p class="meta">Metadata-only suitability review. No installed integration tests; no auto-installation or execution. Discovery rank is not project fit.</p>
-    <p class="meta" id="recommendation-coverage">{{ recommendation_coverage.reviewed_count|default('not supplied') }} reviewed / {{ recommendation_coverage.discovery_count|default('not supplied') }} discovery candidates · {{ recommendation_coverage.inventory_count|default(tool_items|length) }} inventory rows · shortlist limit: {{ recommendation_coverage.shortlist_limit_per_project|default(4) }} per project. Broad inventory retained; leaderboards are not full catalogs.</p>
-    {% for project_id, group in recommendation_groups.items() %}
-    <div class="project-group" data-project="{{ project_id }}">
-      <h2 class="item-name">{{ group.project }}</h2>
-      {% for category in ['shortlist', 'deferred', 'excluded'] %}
-      {% if category == 'shortlist' %}<div class="item-source">Shortlist ({{ group[category]|length }})</div>{% else %}<details class="evidence"><summary>{{ category|capitalize }} ({{ group[category]|length }})</summary>{% endif %}
-      <ul class="items">
-        {% for item in group[category] %}
-        <li class="item recommendation-item" data-id="{{ item.id }}" data-decision="{{ category }}">
-          <div class="item-line"><span class="item-name">{{ safe_link(item.source_urls|first|default(''), item.headline|default(item.id, true)) }}</span><span class="status">[metadata-only · not integration-tested]</span></div>
-          <div class="item-desc">Reason: {{ item.reason }}</div>
-          <div class="item-desc">Constraints:</div><ul class="evidence-list">{% for constraint in item.constraints %}<li>{{ constraint }}</li>{% else %}<li>Not supplied — validate prerequisites.</li>{% endfor %}</ul>
-          <div class="item-source">Discovery: {{ item.freshness.discovery }} · Official metadata: {{ item.freshness.official_metadata }}</div>
-          <div class="item-source">Confidence: {{ item.confidence }} · {{ item.confidence_reason }}</div>
-          <div class="item-source">Cost: {{ item.cost|default('unknown', true) }} · License: {{ item.license|default('unknown', true) }} · Support: {{ item.support|default('unknown', true) }}</div>
-          <div class="item-desc">Next validation: {{ item.next_validation }}</div>
-          <details class="evidence"><summary>Provenance links</summary><ul class="evidence-list">{% for url in item.source_urls %}<li>{{ safe_link(url, url) }}</li>{% else %}<li>No public provenance supplied.</li>{% endfor %}</ul></details>
-        </li>
-        {% else %}<li class="item empty-state">No {{ category }} candidates in this bounded review.</li>{% endfor %}
-      </ul>
-      {% if category != 'shortlist' %}</details>{% endif %}
-      {% endfor %}
-    </div>
-    {% endfor %}
-  </section>
-  {% endif %}
+
 
   <footer>close the world, open the next tab · generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
 
@@ -403,14 +416,33 @@
       record.row.hidden = !matches;
       if (matches) visible += 1;
     });
-    document.getElementById('discovery-result-count').textContent =
-      `${visible} of ${records.length} discoveries shown`;
+    const archive = document.getElementById('discovery-inventory');
+    const filtered = visible !== records.length;
+    const status = document.getElementById('discovery-result-count');
+    // A collapsed archive would hide the rows the filter just selected.
+    if (archive) {
+      if (filtered) archive.open = true;
+      // Pinned open while filtered, so the reader is told why it will not
+      // stay closed. Clearing the filter releases the pin.
+      if (filtered) archive.dataset.pinned = 'true';
+      else delete archive.dataset.pinned;
+    }
+    const open = !archive || archive.open;
+    // The status names the disclosure state so it never implies rows are on
+    // screen while the archive they live in is collapsed.
+    status.textContent = filtered
+      ? `${visible} of ${records.length} discoveries match the filters`
+      : (open
+        ? `${records.length} discoveries, no filter applied`
+        : `${records.length} discoveries collected \u2014 open the inventory below to browse and filter`);
     document.getElementById('discovery-empty').hidden = visible > 0 || records.length === 0;
   };
   search.addEventListener('input', applyFilters);
   project.addEventListener('change', applyFilters);
   source.addEventListener('change', applyFilters);
   applyFilters();
+  const archive = document.getElementById('discovery-inventory');
+  if (archive) archive.addEventListener('toggle', applyFilters);
   [search, project, source].forEach(control => { control.disabled = false; });
 })();
 </script>

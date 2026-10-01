@@ -383,8 +383,11 @@ def test_real_chromium_public_html_is_offline_safe_responsive_and_filters_work(p
     page.on("console", lambda message: violations.append(message.text) if message.type == "error" else None)
     try:
         page.goto(artifact.as_uri(), wait_until="load")
-        assert page.locator(".discovery-item:visible").count() == 2
-        assert page.locator("#discovery-result-count").text_content() == "2 of 2 discoveries shown"
+        assert page.locator('.discovery-item').count() == 2
+        assert page.locator('.discovery-item:visible').count() == 0
+        page.locator('#discovery-inventory > summary').click()
+        assert page.locator('.discovery-item:visible').count() == 2
+        assert page.locator('#discovery-result-count').text_content() == "2 discoveries, no filter applied"
         assert page.evaluate("window.pwned || false") is False
         assert page.locator("img, [onerror], iframe, script[src], link[rel=stylesheet]").count() == 0
         assert "PRIVATE_" not in page.locator("body").inner_text()
@@ -418,7 +421,9 @@ def test_real_chromium_public_html_preserves_no_javascript_fallback(public_brows
     try:
         page = context.new_page()
         page.goto(artifact.as_uri(), wait_until="load")
+        assert page.locator(".discovery-item:visible").count() == 0
+        page.locator("#discovery-inventory > summary").click()
         assert page.locator(".discovery-item:visible").count() == 1
-        assert page.get_by_text("Filters require JavaScript; all discoveries are shown below.", exact=True).is_visible()
+        assert page.get_by_text("Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.", exact=True).is_visible()
     finally:
         context.close()
