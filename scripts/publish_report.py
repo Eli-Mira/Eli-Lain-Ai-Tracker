@@ -21,7 +21,7 @@ __all__ = ["DeliveryError", "deliver_report", "main"]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Deploy the sanitized index.html to the configured Netlify site, "
+    parser = argparse.ArgumentParser(description="Verify the sanitized index.html on Cloudflare Pages, then notify both channels, "
                                                  "verify the hosted bytes, then send the brief to Telegram and Discord.")
     parser.add_argument("--export-dir", type=Path, default=ROOT / "public",
                         help="Directory containing only the sanitized index.html (default: public)")

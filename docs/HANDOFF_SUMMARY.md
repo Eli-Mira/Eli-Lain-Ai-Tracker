@@ -1,4 +1,9 @@
 # EliLain-Intel — completed work and next polish
+> **HISTORICAL DOCUMENT — NOT CURRENT STATE.** The counts, decisions and next steps
+> below are a snapshot from an earlier session and are superseded. Current truth:
+> `docs/RELEASE_ACCEPTANCE.md` (BUG9 shipped, BUG10 closed, Cloudflare-only hosting,
+> customer release still OPEN) and the Obsidian checkpoint
+> `EliLain-Intel - CONTINUE HERE.md`. fruit-slicer has since been deleted.
 
 Final local handoff: October 1, 2026. Source/provider live observations remain the September 30, 2026 snapshot; the handoff did not send new probes or relabel old checks.
 

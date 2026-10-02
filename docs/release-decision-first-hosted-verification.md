@@ -1,5 +1,8 @@
 # Decision-first consumer — fresh hosted verification (2026-10-02 Cairo)
 
+> **SUPERSEDED 2026-10-02:** "no host was removed" below is historical. Netlify was later
+> removed as a host; Cloudflare Pages is now the only host.
+
 ## Verdict and boundary
 
 **BUG7 first-view/order/disclosure defect: VERIFIED SHIPPED. Customer release: NOT APPROVED.**

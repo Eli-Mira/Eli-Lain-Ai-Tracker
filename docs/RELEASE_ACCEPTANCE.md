@@ -4,11 +4,22 @@ Status: **NOT RELEASE-APPROVED**. Opened 2026-10-01 after Eli rejected plumbing-
 
 This checklist supersedes the old IMPLEMENTATION_TODO.md checked boxes and historical handoff completion language. PASS requires the actual output consumer and useful outcome, not merely a file existing or tests returning green.
 
-## Latest repair gate — October 2, 2026 (Cairo): news date consumer
+## Current gate — October 2, 2026 (Cairo): Cloudflare-only hosting + BUG9
+
+**BUG9 news-feed health consumer: VERIFIED SHIPPED. BUG10: CLOSED (superseded below). Hosting: Cloudflare Pages only. Customer release remains OPEN.**
+
+- BUG9 shipped as runtime `7925ed5b` on reviewed diff `0b2b8d0b...a5b4c7` (independent reviewer passed, no security or logic findings). CI `37055762463`: **845 passed + 2 skipped**; Pages byte-verified 3,975,646 bytes SHA `8816f3ff...d20fd`; **171 offline Chromium checks / 0 failures** on the 3 actual downloaded CI HTML files; **138 real health rows** per internal report including **138/138 UNKNOWN** on the report-only restart; public export carries zero health sections.
+- Hosting decision: Netlify's account ran out of deploy credits (HTTP 403 `Account credit usage exceeded`, `auto_topup_enabled=false`). This was **not** a credential-scope problem. Runtime `580612d2` makes **Cloudflare Pages the only host**; Netlify is removed from the workflow and reduced to an explicit opt-in best-effort mirror (`NETLIFY_MIRROR_ENABLED=true`) that can never block a publish. Independent review found 2 blocking logic errors and a receipt-binding flaw; all reproduced RED and were fixed.
+- Proof: CI **`37062735469` SUCCESS** on `580612d2` — **861 passed + 2 skipped**, Pages byte-verified **4,090,516 bytes SHA `9b90ff92...f1355`** (CI and anonymously served copies identical), `delivered: true`, Telegram **receipt-confirmed**, Discord **independently-read-back**, exact `index.html` attached, and **zero Netlify references in the run log**.
+- Durable proof: `EliLain-Intel-Audits/hosted-37062735469/`.
+
+**Still OPEN and owned by Eli:** the customer-release verdict itself, recommendation depth/enrichment policy, Cloudflare token rotation, open-sourcing timing/licence, and the deferred Scrapling evaluation. FreeLLMAPI is **not** an acceptable open-source dependency by Eli's decision; anything built on it must be optional. No live provider inference, no paid AI summary, no router change. No CI database artifact exists, so there is **no independent DB-value audit**. Delivery receipts are never an exactly-once promise or proof a human opened the file.
+
+## Superseded: news date consumer gate — October 2, 2026 (Cairo)
 
 **BUG8 rendered publication/saved-observation metadata: VERIFIED SHIPPED; customer release remains OPEN.** Exact six-file/nine-hunk V2 review SHA `92f8a5b515f7fddb9cbc98e59a0bfb2416d286ddfb80bf7a0026bc98faf0c027` approved by `deleg_c03fecf5`; tested runtime `d252865af1e2f7316d54e6fa73f6d479511298b2`. Local831passed, clean CI **36942612716** **829passed/2setup-dependent skips**. Both actual INTERNAL CI reports show **483 story/date rows / 885 time elements / 81 unknown publications**, with **56 offline browser checks / zero failures**, saved dates unchanged across483 shared `(url,title)` identities. Actual Pages equals downloaded sanitized **3,478,348-byte** file SHA `2bcef3eb8eb447952f882861b85237e486577746c0baa4ffa841115395f7c09f`; **102 served-file checks / zero failures**. **2,430 inventory rows**, all1,335Skills.sh literal owner IDs preserved; originalstyle/header preserved and publicnews excluded. Telegram exact attachment receipt-confirmed, Discord independently read back, cache save successful. Actual review coverage remains12/1395candidates. Full proof: `release-internal-news-dates-hosted-verification.md` and durable `EliLain-Intel-Audits/hosted-36942612716/`.
 
-**Separate confirmed BUG10 remains OPEN:** SQLite observation ingestion still assumes non-null tzinfo means a known offset. Isolated accepted-input diagnostic stored10:15wallUTC as08:15UTC; no production state touched. Consumer repair does not close this upstream edge. **BUG9 per-feed health rendering remains OPEN.** No inference/summary/router/owner changes; no full date-pipeline or customer-release approval.
+**At this historical gate BUG10 and BUG9 were both OPEN** (SQLite ingestion assumed non-null tzinfo meant a known offset). Both have since been repaired and verified — see the current gate above. No inference/summary/router/owner changes occurred; no customer-release approval.
 
 ## Earlier decision-first gate — October 2, 2026 (Cairo)
 
@@ -23,7 +34,7 @@ The preceding failed CI **36932048178** published nothing; its three identical n
 The first review failed closed on truncated input; its pending status is obsolete and it was never approval. Six reproduced implementation defects are closed by reviewed shipped code, production-path regressions and fresh consumer evidence. Qualified provider and optional summary wiring were simulated, not live-inference accepted. Broad source/usefulness/security/delivery acceptance rows remain open rather than being silently closed by CI green. No real probe, paid inference, summary request, router edit or destructive owner dedupe occurred.
 
 ## Requirements locked by Eli
-- Fruit-slicer is paused/canceled. It is not an active recommendation target. Preserve historical state; do not delete the game project.
+- Fruit-slicer was **deleted by Eli on 2026-10-02**. It is not an active recommendation target. Historical archived state and rules are preserved; the game project is no longer active.
 - Active project recommendation groups: Hearth POS, gesture control, data/AI. Keep broad agent/tool/model discovery alongside them.
 - Skills.sh, OpenRouter, UnoRouter, GitHub Trending, local FreeLLMAPI and every configured news source must be accounted for.
 - SQLite/JSON hold real internal state; report generation uses it and updates derived evaluations. Fetch/check time must never be replaced by render time.

@@ -1,5 +1,9 @@
 # Hosted six-bug and Pages verification — run 36904275396
 
+> **SUPERSEDED 2026-10-02:** the sentence below describing Netlify as a retained second copy is
+> historical. Netlify was removed as a host (account out of deploy credits); Cloudflare
+> Pages is now the only host. See `docs/RELEASE_ACCEPTANCE.md` for the current gate.
+
 ## Verdict
 
 **Six repair implementations shipped; Pages end-to-end publication gate PASS. Customer release acceptance remains OPEN.** This is fresh hosted evidence, not the earlier local-only 792-test repair or historical `e756bfd` artifact.

@@ -1,5 +1,8 @@
 # Internal news date consumer — fresh CI verification (2026-10-02 Cairo)
 
+> **SUPERSEDED 2026-10-02:** "Netlify remains the mirror" below is historical. Netlify was later
+> removed as a host; Cloudflare Pages is now the only host.
+
 ## Verdict and exact scope
 
 **BUG8 missing/ambiguous rendered date metadata: VERIFIED SHIPPED. Customer release: NOT APPROVED.**

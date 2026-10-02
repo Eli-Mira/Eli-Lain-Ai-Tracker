@@ -6,9 +6,13 @@ deployment, live notification or site/repo creation was performed.
 
 ## What the pipeline does, in order
 
-1. `DeliveryConfig.from_env` requires all six of `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`,
-   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`.
-   Any missing or empty value raises `missing_config` **before** the first HTTP request.
+1. `DeliveryConfig.from_env` requires the four channel credentials
+   (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_BOT_TOKEN`,
+   `DISCORD_CHANNEL_ID`). **Netlify is no longer required**: `NETLIFY_AUTH_TOKEN`
+   and `NETLIFY_SITE_ID` are read only when `NETLIFY_MIRROR_ENABLED=true`, and a
+   mirror enabled without them degrades to `mirror-unavailable/missing_config`
+   instead of failing the run. Any missing required value raises `missing_config`
+   **before** the first HTTP request.
 2. `load_artifact` refuses any export directory that does not contain exactly one regular,
    non-symlink, non-reparse `index.html` (`unexpected_files`). It then requires the footer
    sentence that identifies the file as the sanitized saved-observation export, requires

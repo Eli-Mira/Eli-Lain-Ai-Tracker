@@ -1,4 +1,9 @@
 # EliLain-Intel — implementation checklist
+> **HISTORICAL DOCUMENT — NOT CURRENT STATE.** The counts, decisions and next steps
+> below are a snapshot from an earlier session and are superseded. Current truth:
+> `docs/RELEASE_ACCEPTANCE.md` (BUG9 shipped, BUG10 closed, Cloudflare-only hosting,
+> customer release still OPEN) and the Obsidian checkpoint
+> `EliLain-Intel - CONTINUE HERE.md`. fruit-slicer has since been deleted.
 
 ## Scope
 Approved by Eli: trustworthy verification, change-first reporting, sanitized evidence, prioritized actions, broad tool/skill/model discovery, regression fixes and tests. Preserve the original Lain site template; defer structural refactoring. Discovery is advisory: never auto-install discovered skills/tools. OpenRouter is an early-warning catalog source, not a request for free inference tokens.

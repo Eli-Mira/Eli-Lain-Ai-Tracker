@@ -2,6 +2,9 @@
 
 Prints only status/size/hash — never the body. Tries several network paths so a
 single blocked route is distinguishable from a genuinely unreachable site.
+
+Cloudflare Pages is the only host; the former Netlify mirror origin was removed
+when that account ran out of deploy credits.
 """
 
 import hashlib
@@ -10,7 +13,7 @@ import ssl
 import sys
 import urllib.request
 
-URL = "https://eli-lain-intel.netlify.app/"
+URL = "https://eli-lain-intel.pages.dev/"
 LOCAL = "public/index.html"
 
 
