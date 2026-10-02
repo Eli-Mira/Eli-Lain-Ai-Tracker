@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
+from .news_health import project_news_health
 
 
 def _safe_http_url(value: Any) -> str:
@@ -77,6 +78,7 @@ class HTMLReporter:
         baseline: bool = False,
         action_items: list[dict[str, Any]] | None = None,
         source_items: list[dict[str, Any]] | None = None,
+        news_health_items: list[dict[str, Any]] | None = None,
         runtime_source: str | None = None,
         recommendation_groups: dict[str, dict[str, Any]] | None = None,
         recommendation_coverage: dict[str, Any] | None = None,
@@ -110,6 +112,7 @@ class HTMLReporter:
             news_saved_total=news_saved_total,
             tool_items=tool_items,
             persona_image_url=persona_image_url,
+            news_health_items=[] if public_export else project_news_health(news_health_items),
             change_items=change_items or [],
             baseline=baseline,
             action_items=action_items or [],
@@ -135,6 +138,7 @@ class HTMLReporter:
         baseline: bool = False,
         action_items: list[dict[str, Any]] | None = None,
         source_items: list[dict[str, Any]] | None = None,
+        news_health_items: list[dict[str, Any]] | None = None,
         runtime_source: str | None = None,
         recommendation_groups: dict[str, dict[str, Any]] | None = None,
         recommendation_coverage: dict[str, Any] | None = None,
@@ -148,6 +152,7 @@ class HTMLReporter:
             report_date=report_date,
             generated_at=generated_at,
             persona_image_url=persona_image_url,
+            news_health_items=news_health_items,
             change_items=change_items or [],
             baseline=baseline,
             action_items=action_items or [],

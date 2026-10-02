@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from tracker_core.schema import NewsItem, SourceType
 from tracker_core.reporter_html import get_html_reporter
+from tracker_core.news_health import aggregate_news_outcomes, build_news_health
 from tracker_core.cache import FileCache
 from intel_sources.store import IntelStore, parse_time
 from intel_sources.decisions import provider_actions, provider_changes
@@ -110,6 +111,7 @@ class NewsTracker:
         self.feed_health = SourceHealthTracker(state_path=str(self.data_dir / "feed_health.json"))
         self.feed_health.load_state()
         self.feed_results: dict[str, dict[str, Any]] = {}
+        self.source_results: dict[str, dict[str, Any]] = {}
 
         # Notifier
         notif_config = {
@@ -289,15 +291,24 @@ class NewsTracker:
             "feed_health": self.feed_health,
         })
         self.feed_results = {}
+        self.source_results = {}
         all_items: list[NewsItem] = []
 
         for adapter in adapters:
             if not self.health.is_source_enabled(adapter.name):
                 logger.info(f"Skipping {adapter.name} (circuit broken)")
+                self.source_results[adapter.name] = {"status": "cooldown", "items": 0}
                 continue
+            # Adapters may be reused; only outcomes produced by this invocation count.
+            adapter.feed_results = {}
             try:
                 items = await asyncio.wait_for(adapter.fetch_all(), timeout=self.source_timeout_seconds)
                 results = getattr(adapter, "feed_results", {})
+                outcome = aggregate_news_outcomes(results)
+                self.source_results[adapter.name] = {
+                    "status": outcome["status"] if results else "healthy" if items else "failed",
+                    "items": len(items),
+                }
                 if items or any(row.get("status") == "healthy" for row in results.values()):
                     all_items.extend(items)
                     self.health.record_success(adapter.name, len(items))
@@ -307,9 +318,11 @@ class NewsTracker:
                 message = f"Source collection timed out after {self.source_timeout_seconds}s; other sources continued"
                 logger.warning("%s: %s", adapter.name, message)
                 self.health.record_failure(adapter.name, message)
+                self.source_results[adapter.name] = {"status": "failed", "error": "timeout"}
             except Exception as e:
                 logger.error("Failed to fetch from %s (%s)", adapter.name, type(e).__name__)
                 self.health.record_failure(adapter.name, type(e).__name__)
+                self.source_results[adapter.name] = {"status": "failed", "error": "fetch_failure"}
             finally:
                 self.feed_results[adapter.name] = dict(getattr(adapter, "feed_results", {}))
 
@@ -509,6 +522,13 @@ class NewsTracker:
             tool_items=tool_items,
             change_items=change_items,
             source_items=source_items,
+            news_health_items=build_news_health(
+                {key: vars(value) for key, value in self.health._sources.items()},
+                {key: vars(value) for key, value in self.feed_health._sources.items()},
+                self.feed_results,
+                source_results=self.source_results,
+                now=self.feed_health._now(),
+            ) if include_news else [],
             action_items=provider_actions([p.to_dict() for p in self.provider_tracker.providers.values()]) if include_providers else [],
             baseline=intel["baseline"],
             runtime_source="GitHub Actions" if os.getenv("GITHUB_ACTIONS") == "true" else "Mira (local)",
@@ -539,7 +559,7 @@ class NewsTracker:
                 counts[status] = counts.get(status, 0) + 1
             row["feed_status_counts"] = counts
             row["feed_count"] = len(results)
-            if counts.get("healthy") and any(status != "healthy" for status in counts):
+            if counts.get("partial") or (counts.get("healthy") and any(status != "healthy" for status in counts)):
                 row["status"] = "partial"
             elif counts and not counts.get("healthy"):
                 row["status"] = "failed" if counts.get("failed") else "cooldown" if counts.get("cooldown") else "not_attempted"

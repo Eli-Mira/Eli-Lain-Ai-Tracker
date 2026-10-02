@@ -207,6 +207,26 @@
     </ul>
   </section>
 
+{% if news_health_items and not public_export %}
+  <section class="tracker source-health" id="news-feed-health" aria-label="News collection health">
+    <div class="section-head"><span class="cmd">$ news-feed-health</span></div>
+    <p class="meta">Current collection outcomes, not provider availability. Unknown means no current outcome supplied. Feed identities are hashed; source success does not prove complete feed coverage.</p>
+    <ul class="items">
+      {% for item in news_health_items %}
+      <li class="item news-health-row" data-news-identity="{{ item.source }}">
+        <div class="item-line"><span class="item-name">{{ item.kind }}: {{ item.source }}</span><span class="status">[{{ item.status }}]</span></div>
+        <div class="item-source">Current collection: {{ item.status }} · Items in current outcome: {{ item['items'] if item['items'] is not none else 'unknown' }}</div>
+        <div class="item-source">History — cumulative items from successful observations: {{ item.total_items if item.total_items is not none else 'unknown' }} (not unique retained news or current-run count) · Consecutive failures: {{ item.consecutive_failures if item.consecutive_failures is not none else 'unknown' }}</div>
+        <div class="item-source">Historical last success: {% if item.last_success %}<time datetime="{{ item.last_success }}">{{ item.last_success }}</time>{% else %}unknown{% endif %} · Historical last failure: {% if item.last_failure %}<time datetime="{{ item.last_failure }}">{{ item.last_failure }}</time>{% else %}unknown{% endif %}</div>
+        <div class="item-source">History cooldown: {{ item.cooldown }}{% if item.cooldown_until %} · Deadline: <time datetime="{{ item.cooldown_until }}">{{ item.cooldown_until }}</time>{% endif %}</div>
+        {% if item.current_error %}<div class="item-source">Current failure classification: {{ item.current_error }}</div>{% endif %}
+        {% if item.historical_error %}<div class="item-source">Historical failure classification: {{ item.historical_error }}</div>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
   <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
     <div class="section-head"><span class="cmd">$ source-health</span></div>
     <p class="meta">Collection health and coverage; not provider availability.</p>
