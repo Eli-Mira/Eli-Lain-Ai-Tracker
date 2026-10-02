@@ -295,6 +295,38 @@ def _destination_bindings(config: DeliveryConfig) -> dict[str, str]:
             for channel, values in destinations.items()}
 
 
+@contextmanager
+def _receipt_lock(path: Path, timeout: float = 10.0):
+    """Serialize concurrent receipt writers with an O_EXCL lock file.
+
+    Without this the read-modify-write races: two runs each write a snapshot
+    taken before the other's record landed, and the lost record means an already
+    delivered artifact is announced a second time.
+    """
+    lock = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                # Never block a publish forever on a stale lock: fail closed
+                # with a safe code rather than risk a duplicate announcement.
+                raise DeliveryError("receipt_state_locked") from None
+            time.sleep(0.05)
+            continue
+        else:
+            os.close(handle)
+            break
+    try:
+        yield
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
 def save_receipts(state_path: str | Path | None, artifact: ReportArtifact,
                   receipts: DeliveryResult, config: DeliveryConfig) -> None:
     """Record the delivery so an identical artifact is not announced twice."""
@@ -302,18 +334,35 @@ def save_receipts(state_path: str | Path | None, artifact: ReportArtifact,
         return
     path = Path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    artifacts = load_receipts(state_path)
     bindings = _destination_bindings(config)
-    artifacts[artifact.sha256] = {
+    record = {
         "url": receipts.hosted.url,
         "telegram": (receipts.telegram.message_id or "") if receipts.telegram.confirmed else "",
         "discord": (receipts.discord.message_id or "") if receipts.discord.confirmed else "",
         "telegram_destination": bindings["telegram"],
         "discord_destination": bindings["discord"],
     }
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps({"artifacts": artifacts}, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, path)
+    with _receipt_lock(path):
+        # Read INSIDE the lock, so a concurrent writer's record is merged
+        # rather than clobbered by a pre-lock snapshot.
+        artifacts = load_receipts(state_path)
+        artifacts[artifact.sha256] = record
+        temporary = path.with_name(path.name + ".tmp")
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"artifacts": artifacts}, handle, sort_keys=True)
+                handle.flush()
+                # Durability: os.replace is atomic, but without fsync of the
+                # temp file a crash can leave the renamed file empty, which
+                # fails to load and would re-announce a delivered report.
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
 
 
 def resolve_public_dns(host: str) -> Sequence[str]:
