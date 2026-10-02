@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Any
 
@@ -13,6 +14,26 @@ from tracker_core.schema import NewsItem
 
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_API_URL = "http://localhost:3001/v1/chat/completions"
+
+# Enough headroom for a reasoning model to think and still return the JSON array.
+MAX_COMPLETION_TOKENS = 4096
+DEFAULT_COMPLETION_TOKENS = 1000
+
+REASONING_MARKERS = ("minicpm", "deepseek", "qwq", "r1", "thinking", "reason")
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_loopback(url: str) -> bool:
+    """True when the endpoint is on this machine and needs no credential."""
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return host.lower() in _LOOPBACK_HOSTS
+
 
 
 class Summarizer:
@@ -30,6 +51,18 @@ class Summarizer:
         self.model = self.config.get("model", "free-tier")
         self.api_key = self.config.get("api_key")
         self.base_url = self.config.get("base_url")
+        # A keyless endpoint must be LOCAL. Ollama and FreeLLMAPI both serve an
+        # OpenAI-compatible /v1/chat/completions on loopback with no credential,
+        # which is how this project stays free. A remote endpoint with no key is
+        # still refused: that would be an uncredentialed call to a third party.
+        self.endpoint = self.base_url or DEFAULT_API_URL
+        self.keyless_endpoint = _is_loopback(self.endpoint)
+        # Reasoning-style local models need a larger completion budget and reject
+        # an explicit low temperature.
+        self.model_reasoning = any(
+            marker in str(self.model).lower() for marker in REASONING_MARKERS)
+        self.max_tokens = self.config.get(
+            "max_tokens", MAX_COMPLETION_TOKENS if self.model_reasoning else DEFAULT_COMPLETION_TOKENS)
     
     async def summarize_items(
         self,
@@ -106,8 +139,8 @@ Only return valid JSON, no markdown formatting."""
     
     async def _call_llm(self, prompt: str) -> str:
         """Call LLM API for summarization."""
-        # Use FreeLLMAPI (user's local backend) or default to free-tier model
-        api_url = self.base_url or "http://localhost:3001/v1/chat/completions"
+        # Defaults to the local router; both it and Ollama are keyless.
+        api_url = self.endpoint
         
         headers = {
             "Content-Type": "application/json"
@@ -118,9 +151,18 @@ Only return valid JSON, no markdown formatting."""
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 1000
+            # Some local models (verified: minicpm5-2b-q8) spend the entire
+            # budget on internal reasoning tokens and then return EMPTY content
+            # with finish_reason "length", for a 167-token prompt. That is not a
+            # malformed response, it is a starved budget - so the budget has to
+            # leave room for reasoning plus the JSON array. Costs nothing: local
+            # inference is not billed per token.
+            "max_tokens": self.max_tokens,
         }
+        # Reasoning models reject an explicit temperature of 0.3 on some
+        # backends; only send it when it is meaningful.
+        if not self.model_reasoning:
+            payload["temperature"] = 0.3
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -161,7 +203,19 @@ async def summarize_news(
         List of NewsItem with summaries
     """
     summarizer = Summarizer(config)
-    if not summarizer.api_key:
+    # Opt-in stays opt-in. An EMPTY config means the caller never enabled AI
+    # summaries (the CLI default, and every non-opt-in path), and must make zero
+    # requests - that guarantee is load-bearing, so a reachable default endpoint
+    # must not switch it on by itself.
+    #
+    # "The endpoint needs no credential" and "we are allowed to call it" are two
+    # different questions. Answering the first must not silently answer the second.
+    if not config:
+        return summarizer.summarize_manually(items)
+    # Within an explicitly enabled setup, a keyless LOCAL endpoint is legitimate
+    # (Ollama/FreeLLMAPI need no credential). A keyless REMOTE endpoint is not,
+    # because that would be an uncredentialed call to a third party.
+    if not summarizer.api_key and not summarizer.keyless_endpoint:
         return summarizer.summarize_manually(items)
     
     # Try LLM summarization first
