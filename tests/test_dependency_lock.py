@@ -69,6 +69,13 @@ def test_lock_pins_are_exact_not_ranges():
             f"lock entry contains a range operator: {line!r}")
 
 
+# Platform-conditional pins: tzdata supplies the IANA database for zoneinfo on
+# systems that have no system tz database. Windows needs it; Linux CI installs
+# the OS package instead and legitimately does not have it. Absent there is
+# correct, so absence is only an error for unconditional pins.
+PLATFORM_CONDITIONAL = {"tzdata"}
+
+
 def test_installed_versions_match_the_lock():
     import importlib.metadata as metadata
 
@@ -78,13 +85,23 @@ def test_installed_versions_match_the_lock():
         try:
             installed = metadata.version(name)
         except metadata.PackageNotFoundError:
-            absent.append(name)
+            # Installed-but-different from the lock is always wrong. Not installed
+            # is wrong too, unless the pin is only needed on some platforms.
+            if name not in PLATFORM_CONDITIONAL:
+                absent.append(name)
             continue
         if installed != pinned:
             mismatched.append(f"{name}: lock says {pinned}, installed {installed}")
     assert not absent, f"lock pins packages that are not installed: {absent}"
     assert not mismatched, ("the lock no longer describes the environment under test: "
                             + "; ".join(mismatched))
+
+
+def test_platform_conditional_pins_are_declared_as_such():
+    """The exemption list must stay honest: only genuinely conditional pins."""
+    pins = _pinned()
+    unknown = PLATFORM_CONDITIONAL - set(pins)
+    assert not unknown, f"exempted but not pinned in the lock: {sorted(unknown)}"
 
 
 def test_lock_does_not_pin_local_packages():
