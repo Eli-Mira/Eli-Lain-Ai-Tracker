@@ -554,6 +554,11 @@ class _Session:
         are uploaded and the receipt must echo the filename and size, so a
         truncated or renamed upload can never be reported as confirmed.
         """
+        # Tracks what the customer actually received. If the text send is
+        # confirmed but the document send then fails, that id MUST survive into
+        # the receipt: dropping it is what makes a retry re-send the brief and
+        # duplicate the announcement.
+        delivered_text_id: int | None = None
         try:
             base = "https://api.telegram.org/bot" + self.config.telegram_token
             response = self.api("POST", base + "/sendMessage",
@@ -565,6 +570,7 @@ class _Session:
                     or result.get("chat", {}).get("id") != int(self.config.telegram_chat_id)
                     or result.get("text") != brief):
                 raise DeliveryError("telegram_receipt_invalid")
+            delivered_text_id = identifier
             if artifact is not None:
                 document = self.api(
                     "POST", base + "/sendDocument",
@@ -579,7 +585,11 @@ class _Session:
                 identifier = f"{identifier}/{sent.get('message_id')}"
             return ChannelReceipt("telegram", str(identifier), "receipt-confirmed")
         except DeliveryError as exc:
-            return ChannelReceipt("telegram", None, "unconfirmed", exc.code)
+            # Report exactly what landed: the brief id if the text was confirmed,
+            # otherwise nothing. The error code still says the file is missing.
+            return ChannelReceipt("telegram",
+                                  str(delivered_text_id) if delivered_text_id else None,
+                                  "unconfirmed", exc.code)
 
     def discord(self, brief: str, artifact: ReportArtifact | None = None) -> ChannelReceipt:
         """Send the brief, then the verified standalone file, then read it back.

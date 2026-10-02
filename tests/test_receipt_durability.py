@@ -150,3 +150,72 @@ def test_empty_receipt_file_is_refused(tmp_path):
 
 def test_missing_state_file_is_the_only_silent_empty_case(tmp_path):
     assert rd.load_receipts(tmp_path / "absent.json") == {}
+
+
+# --- Telegram partial-failure replay -------------------------------------------------
+#
+# telegram() sends the brief as text and THEN the file. If the text send
+# succeeds but the document send fails, the receipt must still carry the
+# confirmed text message id. Otherwise a retry re-sends the text, and the
+# customer gets the same announcement twice.
+
+
+ARTIFACT_BYTES = b"<html></html>"
+
+
+class _TelegramStub:
+    """Minimal stub: text send always succeeds; the document send is controllable."""
+
+    def __init__(self, document_ok):
+        self.document_ok = document_ok
+        self.calls = []
+
+    def __call__(self, method, url, **kwargs):
+        self.calls.append(url.rsplit("/", 1)[-1])
+        if url.endswith("/sendMessage"):
+            return {"ok": True, "result": {"message_id": 7, "chat": {"id": 123456}, "text": "brief"}}
+        if url.endswith("/sendDocument"):
+            if not self.document_ok:
+                return {"ok": False, "description": "upload failed"}
+            return {"ok": True, "result": {"message_id": 8, "chat": {"id": 123456},
+                                           "document": {"file_name": rd.ATTACHMENT_NAME,
+                                                          "file_size": len(ARTIFACT_BYTES)}}}
+        raise AssertionError(f"unexpected call: {url}")
+
+
+def _telegram_session(stub):
+    """A _Session whose api() is the stub. No network, no client, no transport."""
+    session = rd._Session.__new__(rd._Session)
+    session.config = _config()
+    session.api = stub
+    return session
+
+
+def test_confirmed_text_message_id_survives_a_failed_document_send():
+    """The customer DID get the text; losing that id is what causes the duplicate."""
+    stub = _TelegramStub(document_ok=False)
+    receipt = _telegram_session(stub).telegram("brief", _artifact("a" * 64))
+    assert receipt.error_code == "telegram_attachment_unverified"
+    assert receipt.message_id is not None, (
+        "the confirmed text message id was discarded, so a retry will re-send the brief")
+    assert receipt.message_id.startswith("7"), "the text message id must be recoverable from the receipt"
+
+
+def test_fully_failed_send_reports_no_identifier():
+    """Nothing was delivered, so nothing may be claimed."""
+    class Dead:
+        def __call__(self, method, url, **kwargs):
+            return {"ok": False, "description": "blocked"}
+
+    receipt = _telegram_session(Dead()).telegram("brief", _artifact("a" * 64))
+    assert receipt.message_id is None
+    assert receipt.confirmation == "unconfirmed"
+    assert receipt.error_code == "telegram_receipt_invalid"
+
+
+def test_complete_send_reports_the_pair():
+    stub = _TelegramStub(document_ok=True)
+    receipt = _telegram_session(stub).telegram("brief", _artifact("a" * 64))
+    assert receipt.message_id == "7/8"
+    assert receipt.confirmed
+    assert stub.calls == ["sendMessage", "sendDocument"]
