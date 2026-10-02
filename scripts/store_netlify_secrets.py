@@ -1,4 +1,8 @@
-"""Store Netlify credentials as GitHub secrets without printing either value.
+"""Store the OPTIONAL Netlify mirror secrets without printing either value.
+
+Cloudflare Pages is the project's only host; the workflow no longer reads these
+secrets. This remains only for manually restoring the best-effort mirror, and is
+useless unless `NETLIFY_MIRROR_ENABLED=true` is also set on the workflow.
 
 Reads the token the official Netlify CLI login already stored, and pipes both
 values straight into `gh secret set` on stdin. Nothing is echoed, written to a

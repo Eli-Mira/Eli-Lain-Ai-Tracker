@@ -72,6 +72,8 @@ class DeliveryConfig:
     discord_token: str
     discord_channel_id: str
     public_report_url: str = ""
+    mirror_enabled: bool = False
+    requested_mirror: bool = False
 
     def __repr__(self) -> str:
         return "DeliveryConfig(<redacted>)"
@@ -79,14 +81,27 @@ class DeliveryConfig:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> DeliveryConfig:
         env = os.environ if environ is None else environ
-        names = ("NETLIFY_AUTH_TOKEN", "NETLIFY_SITE_ID", "TELEGRAM_BOT_TOKEN",
-                 "TELEGRAM_CHAT_ID", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")
+        names = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+                 "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")
         if any(not env.get(name) for name in names):
             raise DeliveryError("missing_config")
         public_url = env.get("PUBLIC_REPORT_URL", "")
         if public_url not in ("", PAGES_PUBLIC_URL):
             raise DeliveryError("unsafe_public_url")
-        return cls(*(env[name] for name in names), public_report_url=public_url)
+        # Cloudflare Pages is the host. Netlify is opt-in and only ever a
+        # best-effort mirror, so its credentials are required solely when it is
+        # explicitly enabled - never as a precondition for publishing.
+        mirror_enabled = env.get("NETLIFY_MIRROR_ENABLED", "") == "true"
+        netlify_token = env.get("NETLIFY_AUTH_TOKEN", "")
+        site_id = env.get("NETLIFY_SITE_ID", "")
+        # A mirror enabled without its credentials is a degraded mirror, not a
+        # failed publish: it must never reproduce the incident this replaced.
+        mirror_configured = mirror_enabled and bool(netlify_token) and bool(site_id)
+        if not mirror_configured:
+            netlify_token = site_id = ""
+        return cls(netlify_token, site_id, *(env[name] for name in names),
+                   public_report_url=public_url, mirror_enabled=mirror_configured,
+                   requested_mirror=mirror_enabled)
 
 
 @dataclass(frozen=True)
@@ -120,11 +135,29 @@ class ChannelReceipt:
 
 
 @dataclass(frozen=True)
+class MirrorReceipt:
+    """Best-effort secondary host. Never gates the required primary host.
+
+    A deployed-but-uncredited mirror provider, an expired grant or a provider
+    outage must not be able to withhold a report the primary host already
+    published byte-verified.
+    """
+    url: str | None
+    confirmation: str
+    error_code: str | None = None
+
+    @property
+    def confirmed(self) -> bool:
+        return self.confirmation == "mirror-verified"
+
+
+@dataclass(frozen=True)
 class DeliveryResult:
     hosted: HostedReport
     brief: str
     telegram: ChannelReceipt
     discord: ChannelReceipt
+    mirror: MirrorReceipt | None = None
 
     @property
     def success(self) -> bool:
@@ -247,11 +280,14 @@ def load_receipts(state_path: str | Path | None) -> dict[str, dict[str, str]]:
 
 
 def _destination_bindings(config: DeliveryConfig) -> dict[str, str]:
-    """Bind receipts to the actual site/account/target without persisting them."""
-    destinations = {
-        "telegram": (config.site_id, config.telegram_token, config.telegram_chat_id),
-        "discord": (config.site_id, config.discord_token, config.discord_channel_id),
-    }
+    """Bind a receipt to where it was sent and which public link was verified.
+
+    Deliberately independent of the Netlify site id: toggling the optional
+    mirror must not invalidate a receipt for a byte-identical artifact and
+    trigger a duplicate send.
+    """
+    destinations = {"telegram": (config.telegram_token, config.telegram_chat_id),
+                    "discord": (config.discord_token, config.discord_channel_id)}
     if config.public_report_url:
         destinations = {channel: (*values, config.public_report_url)
                         for channel, values in destinations.items()}
@@ -562,7 +598,12 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
                    poll_attempts: int = 30, poll_interval: float = 1.0,
                    sleep: Callable[[float], None] = time.sleep,
                    state_path: str | Path | None = None) -> DeliveryResult:
-    """Require verified hosting and BOTH channels. Raises on any partial delivery.
+    """Require verified Cloudflare Pages hosting and BOTH channels.
+
+    Cloudflare Pages is the only host. Netlify is an opt-in, best-effort mirror
+    (``NETLIFY_MIRROR_ENABLED=true``) whose credentials are required only when
+    enabled; it is never a precondition for publishing, and its failure can
+    never withhold a report the primary host already published byte-verified.
 
     An exception with .result records per-channel outcomes; Telegram's official
     sendMessage receipt is not an independent message readback. No send retries.
@@ -582,9 +623,29 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
         with _quiet_http_logs(), httpx.Client(transport=pinned, timeout=20.0, trust_env=False,
                                               follow_redirects=False) as client:
             session = _Session(config, pinned, client)
-            hosted = session.host(artifact, poll_attempts, poll_interval, sleep)
-            if config.public_report_url:
-                hosted = session.pages(artifact)
+            # The required host is verified BEFORE any third-party deploy, so a
+            # run that will abort never creates one.
+            hosted = session.pages(artifact)
+            mirror: MirrorReceipt | None = None
+            if config.requested_mirror and not config.mirror_enabled:
+                log.warning("netlify mirror unavailable: %s", "missing_config")
+                mirror = MirrorReceipt(None, "mirror-unavailable", "missing_config")
+            if config.mirror_enabled:
+                # Opt-in secondary host only. Catches Exception, not just
+                # DeliveryError: a 2xx body missing "id"/"ssl_url" raises
+                # KeyError inside host(), and that must stay in this block rather
+                # than aborting a report the primary host already published.
+                try:
+                    mirrored = session.host(artifact, poll_attempts, poll_interval, sleep)
+                except DeliveryError as error:
+                    # Safe code only, never the provider's message or a token.
+                    log.warning("netlify mirror unavailable: %s", error.code)
+                    mirror = MirrorReceipt(None, "mirror-unavailable", error.code)
+                except Exception:
+                    log.warning("netlify mirror unavailable: %s", "mirror_failed")
+                    mirror = MirrorReceipt(None, "mirror-unavailable", "mirror_failed")
+                else:
+                    mirror = MirrorReceipt(mirrored.url, "mirror-verified")
             brief = build_brief(artifact, hosted)
             already = restored_receipts.get(artifact.sha256) or {}
             bindings = _destination_bindings(config)
@@ -594,7 +655,7 @@ def deliver_report(export_dir: str | Path, *, environ: Mapping[str, str] | None 
             discord = (ChannelReceipt("discord", already["discord"], "previously-confirmed")
                        if already.get("discord") and already.get("discord_destination") == bindings["discord"]
                        else session.discord(brief, artifact))
-            result = DeliveryResult(hosted, brief, telegram, discord)
+            result = DeliveryResult(hosted, brief, telegram, discord, mirror)
             # Persist confirmed channels even when their sibling fails. A later
             # explicit rerun must not repeat a previously confirmed upload.
             save_receipts(state_path, artifact, result, config)

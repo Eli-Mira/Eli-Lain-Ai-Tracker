@@ -1,7 +1,7 @@
-"""Cloudflare is primary only after exact readback; Netlify stays a mirror."""
+"""Cloudflare Pages is the only host; the Netlify mirror is opt-in and best-effort."""
 import httpx
 import pytest
-from test_report_delivery import artifact_dir, module, ENV, Protocol
+from test_report_delivery import artifact_dir, module, ENV, MIRROR_ENV, Protocol
 
 PAGES = 'https://eli-lain-intel.pages.dev/'
 
@@ -29,14 +29,26 @@ def deliver(directory, protocol, **kwargs):
         sleep=lambda _: None, **kwargs)
 
 
-def test_verified_pages_url_is_primary_with_netlify_kept(artifact_dir):
+def test_pages_is_the_only_host_unless_a_mirror_is_opted_in(artifact_dir):
     data = (artifact_dir / 'index.html').read_bytes()
     protocol = PagesProtocol(data)
     result = deliver(artifact_dir, protocol)
     assert result.hosted.url == PAGES
     assert PAGES in result.brief
     assert result.success
+    assert not any(r.headers['host'] == 'api.netlify.com' for r in protocol.calls), \
+        'Netlify must stay out of the default path entirely'
+
+
+def test_opted_in_mirror_is_still_deployed_best_effort(artifact_dir):
+    data = (artifact_dir / 'index.html').read_bytes()
+    protocol = PagesProtocol(data)
+    result = module().deliver_report(artifact_dir, environ={**MIRROR_ENV, 'PUBLIC_REPORT_URL': PAGES},
+        transport=httpx.MockTransport(protocol), resolver=lambda host: ['8.8.8.8'],
+        sleep=lambda _: None)
     assert any(r.headers['host'] == 'api.netlify.com' and r.method == 'POST' for r in protocol.calls)
+    assert result.mirror is not None and result.mirror.confirmed is True
+    assert result.hosted.url == PAGES
     pages_index = next(i for i, r in enumerate(protocol.calls) if r.headers['host'] == 'eli-lain-intel.pages.dev')
     posts = [i for i, r in enumerate(protocol.calls) if r.method == 'POST' and r.headers['host'] in {'discord.com', 'api.telegram.org'}]
     assert posts and all(pages_index < i for i in posts)

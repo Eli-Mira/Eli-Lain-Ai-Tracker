@@ -38,7 +38,7 @@ def test_changed_telegram_destination_does_not_reuse_old_confirmation(artifact_d
     persisted = state.read_text(encoding="utf-8")
     assert other_env["TELEGRAM_CHAT_ID"] not in persisted
     assert all(ENV[name] not in persisted for name in
-               ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "NETLIFY_AUTH_TOKEN"))
+               ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"))
 
 
 @pytest.mark.parametrize("contents", [

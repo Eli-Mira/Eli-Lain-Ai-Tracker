@@ -15,21 +15,26 @@ DEPLOY = "abc123"
 # The bot token appears in the request PATH, so it must never be logged or
 # asserted on as a literal in failure messages. Protocol stubs reference the
 # path segment through this alias instead of the raw secret value.
+# Cloudflare Pages is the only host. Netlify credentials are deliberately absent
+# here: the default delivery path must need no Netlify configuration at all.
 ENV = {
-    "NETLIFY_AUTH_TOKEN": "test-netlify-token",
-    "NETLIFY_SITE_ID": SITE,
     "TELEGRAM_BOT_TOKEN": "123456:TEST_TELEGRAM_TOKEN",
     "TELEGRAM_CHAT_ID": "-1001234567890",
     "DISCORD_BOT_TOKEN": "TEST_DISCORD_TOKEN",
     "DISCORD_CHANNEL_ID": "123456789012345678",
 }
 ENV["TELEGRAM_TOKEN_PATH"] = ENV["TELEGRAM_BOT_TOKEN"]
-URL = "https://report-fixture.netlify.app/"
-URL_HOST = "report-fixture.netlify.app"
+URL = "https://eli-lain-intel.pages.dev/"
+URL_HOST = "eli-lain-intel.pages.dev"
+# Only used by the explicit opt-in mirror tests.
+MIRROR_URL = "https://report-fixture.netlify.app/"
+MIRROR_URL_HOST = "report-fixture.netlify.app"
 # Netlify answers 401 for this per-deploy alias on a team site, so the canonical
 # ssl_url above is what must be read back. The real deploy payload carries both.
 ALIAS = "https://abc123--report-fixture.netlify.app/"
 ALIAS_HOST = "abc123--report-fixture.netlify.app"
+MIRROR_ENV = dict(ENV, NETLIFY_AUTH_TOKEN="test-netlify-token", NETLIFY_SITE_ID=SITE,
+                  NETLIFY_MIRROR_ENABLED="true")
 
 
 def parse_multipart(request):
@@ -98,8 +103,13 @@ class Protocol:
             if response is not None:
                 return response
         path = request.url.path
+        if host == URL_HOST:
+            assert request.method == "GET" and path == "/"
+            assert "authorization" not in request.headers
+            assert "cookie" not in request.headers
+            return httpx.Response(200, content=self.data, headers={"content-type": "text/html; charset=utf-8"})
         if host == "api.netlify.com":
-            assert request.headers["authorization"] == "Bearer " + ENV["NETLIFY_AUTH_TOKEN"]
+            assert request.headers["authorization"] == "Bearer " + MIRROR_ENV["NETLIFY_AUTH_TOKEN"]
             if request.method == "GET" and path == f"/api/v1/sites/{SITE}":
                 return httpx.Response(200, json={"id": SITE, "name": "report-fixture"})
             if request.method == "POST" and path == f"/api/v1/sites/{SITE}/deploys":
@@ -115,9 +125,9 @@ class Protocol:
                 return httpx.Response(200, json={"path": "/index.html"})
             if request.method == "GET" and path == f"/api/v1/deploys/{DEPLOY}":
                 return httpx.Response(200, json={"id": DEPLOY, "site_id": SITE, "state": "ready",
-                                              "ssl_url": URL.rstrip("/"),
+                                              "ssl_url": MIRROR_URL.rstrip("/"),
                                               "deploy_ssl_url": ALIAS.rstrip("/")})
-        if host in (URL_HOST, ALIAS_HOST):
+        if host in (MIRROR_URL_HOST, ALIAS_HOST):
             assert request.method == "GET" and path == "/"
             assert "authorization" not in request.headers
             assert "cookie" not in request.headers
@@ -175,6 +185,24 @@ class Guard(Protocol):
         return override
 
 
+def mirror_session(protocol):
+    """Drive the opt-in Netlify mirror directly.
+
+    The mirror is best-effort by design, so its internal guards are proven at
+    the ``session.host()`` seam rather than through ``deliver_report``, where a
+    mirror failure is now correctly absorbed instead of aborting the run.
+    """
+    from intel_sources.report_delivery import DeliveryConfig, _PinnedTransport, _Session
+
+    config = DeliveryConfig(netlify_token=MIRROR_ENV["NETLIFY_AUTH_TOKEN"], site_id=SITE,
+                            telegram_token="t", telegram_chat_id="1",
+                            discord_token="d", discord_channel_id="2",
+                            mirror_enabled=True)
+    pinned = _PinnedTransport(lambda host: ["8.8.8.8"], httpx.MockTransport(protocol))
+    client = httpx.Client(transport=pinned, timeout=20.0, trust_env=False, follow_redirects=False)
+    return _Session(config, pinned, client), client
+
+
 def run(directory, protocol, **kwargs):
     return module().deliver_report(directory, environ=ENV, transport=httpx.MockTransport(protocol),
                                    resolver=lambda host: ["8.8.8.8"], sleep=lambda seconds: None, **kwargs)
@@ -225,11 +253,16 @@ def test_redirecting_hosted_url_is_not_followed(artifact_dir):
 
 def test_private_or_foreign_hosted_url_is_rejected(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
-    protocol = Guard(data, lambda r: r.url.path == "/api/v1/deploys/" + DEPLOY
+    protocol = Guard(data, lambda r: r.headers["host"] == "api.netlify.com"
+                     and r.url.path == "/api/v1/deploys/" + DEPLOY
                      and httpx.Response(200, json={"id": DEPLOY, "site_id": SITE, "state": "ready",
                                                    "ssl_url": "https://evil.example.com/"}))
-    with pytest.raises(module().DeliveryError) as caught:
-        run(artifact_dir, protocol)
+    session, client = mirror_session(protocol)
+    try:
+        with pytest.raises(module().DeliveryError) as caught:
+            session.host(module().load_artifact(artifact_dir), 2, 0.0, lambda seconds: None)
+    finally:
+        client.close()
     assert caught.value.code == "unsafe_url"
 
 
@@ -317,13 +350,17 @@ def test_oversized_hosted_response_is_refused(artifact_dir):
 def test_deploy_state_is_polled_with_backoff_and_never_assumed_ready(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
     states = iter(["preparing", "processing"])
-    protocol = Guard(data, lambda r: r.url.path == "/api/v1/deploys/" + DEPLOY
+    protocol = Guard(data, lambda r: r.headers["host"] == "api.netlify.com"
+                     and r.url.path == "/api/v1/deploys/" + DEPLOY
                      and httpx.Response(200, json={"id": DEPLOY, "site_id": SITE, "state": next(states),
-                                                   "deploy_ssl_url": URL.rstrip("/")}))
+                                                   "deploy_ssl_url": MIRROR_URL.rstrip("/")}))
     slept = []
-    with pytest.raises(module().DeliveryError) as caught:
-        module().deliver_report(artifact_dir, environ=ENV, transport=httpx.MockTransport(protocol),
-                               resolver=lambda host: ["8.8.8.8"], sleep=slept.append, poll_attempts=2)
+    session, client = mirror_session(protocol)
+    try:
+        with pytest.raises(module().DeliveryError) as caught:
+            session.host(module().load_artifact(artifact_dir), 2, 1.0, slept.append)
+    finally:
+        client.close()
     assert caught.value.code == "deploy_not_ready"
     assert slept == [1.0]
     assert not any(r.headers["host"] in {"api.telegram.org", "discord.com"} for r in protocol.calls)
@@ -331,11 +368,16 @@ def test_deploy_state_is_polled_with_backoff_and_never_assumed_ready(artifact_di
 
 def test_foreign_deploy_id_in_status_is_rejected(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
-    protocol = Guard(data, lambda r: r.url.path == "/api/v1/deploys/" + DEPLOY
+    protocol = Guard(data, lambda r: r.headers["host"] == "api.netlify.com"
+                     and r.url.path == "/api/v1/deploys/" + DEPLOY
                      and httpx.Response(200, json={"id": "PRIVATE_DEPLOY_CANARY", "site_id": SITE,
-                                                   "state": "ready", "deploy_ssl_url": URL.rstrip("/")}))
-    with pytest.raises(module().DeliveryError) as caught:
-        run(artifact_dir, protocol)
+                                                   "state": "ready", "deploy_ssl_url": MIRROR_URL.rstrip("/")}))
+    session, client = mirror_session(protocol)
+    try:
+        with pytest.raises(module().DeliveryError) as caught:
+            session.host(module().load_artifact(artifact_dir), 2, 0.0, lambda seconds: None)
+    finally:
+        client.close()
     assert caught.value.code == "deploy_mismatch"
     assert "PRIVATE_DEPLOY_CANARY" not in str(caught.value)
 
@@ -394,8 +436,9 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert "metadata only" in result.brief
     assert "not a fresh fetch" in result.brief
     assert URL in result.brief
-    assert [r.headers["host"] for r in protocol.calls] == ["api.netlify.com"] * 4 + [
-        URL_HOST, "api.telegram.org", "api.telegram.org", "discord.com", "discord.com"]
+    assert [r.headers["host"] for r in protocol.calls] == [
+        URL_HOST, "api.telegram.org", "api.telegram.org", "discord.com", "discord.com"], \
+        "the default path must contact Cloudflare Pages and the channels, never Netlify"
     assert (artifact_dir / "index.html").read_bytes() == data
 
 
@@ -613,7 +656,7 @@ def test_hosted_readback_uses_the_canonical_site_url_not_the_deploy_url():
         "state": "ready",
         "required": [],
         # The per-deploy alias answers 401; the canonical URL is what is published.
-        "ssl_url": "https://eli-lain-intel.netlify.app",
+        "ssl_url": MIRROR_URL,
         "deploy_ssl_url": "https://dep1--eli-lain-intel.netlify.app",
     }
 
@@ -632,5 +675,5 @@ def test_hosted_readback_uses_the_canonical_site_url_not_the_deploy_url():
         sha256 = __import__("hashlib").sha256(body).hexdigest()
 
     hosted = session.host(Artifact(), 2, 0.0, lambda seconds: None)
-    assert hosted.url == "https://eli-lain-intel.netlify.app/"
+    assert hosted.url == MIRROR_URL
     assert any("dep1--" not in url for url in requested)

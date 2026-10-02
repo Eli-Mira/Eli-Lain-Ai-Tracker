@@ -139,11 +139,12 @@ jobs:
         env:
           # Class-name-only failure diagnostics; never logs messages or URLs.
           DELIVERY_DEBUG: "1"
-          # Empty when Pages is skipped: preserve the legacy Netlify path.
-          # The publisher independently re-verifies Pages before channel sends.
+          # Cloudflare Pages is the only host. The publisher independently
+          # re-verifies these exact bytes before any channel send.
           PUBLIC_REPORT_URL: ${{ steps.verify-pages.outputs.url }}
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          # Netlify was removed as a host: its deploy credit ran out and it is
+          # no longer contacted. The optional best-effort mirror stays off; set
+          # NETLIFY_MIRROR_ENABLED=true and restore its two secrets to use it.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}

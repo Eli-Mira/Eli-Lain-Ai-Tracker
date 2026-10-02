@@ -47,10 +47,14 @@ def test_publish_step_is_gated_without_using_secrets_in_step_if():
     assert 'vars.PUBLISH_ENABLED' in condition
     # Secrets still reach the process through env, never through argv or interpolation.
     env = publish[0]['env']
-    for name in ('NETLIFY_AUTH_TOKEN', 'NETLIFY_SITE_ID', 'TELEGRAM_BOT_TOKEN',
-                 'TELEGRAM_CHAT_ID', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_ID'):
+    for name in ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+                 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_ID'):
         assert env[name] == '${{ secrets.%s }}' % name
     assert 'secrets.' not in publish[0]['run']
+    # Netlify was removed as a host: the workflow must not inject its secrets at all.
+    assert 'NETLIFY_AUTH_TOKEN' not in env, 'workflow still injects the removed Netlify credential'
+    assert 'NETLIFY_SITE_ID' not in env, 'workflow still injects the removed Netlify site id'
+    assert 'secrets.NETLIFY_' not in text
     # No untrusted event text interpolated into any run block.
     for step in steps:
         for suspect in ('github.event.issue', 'github.event.pull_request',
