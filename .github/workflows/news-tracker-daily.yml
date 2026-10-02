@@ -33,10 +33,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install dependencies from the lock
         run: |
-          pip install -e "./src/tracker-core"
-          pip install -e ".[dev]"
+          # The lock is authoritative. `pip install -e ".[dev]"` resolves pyproject's
+          # open ranges instead, so two runs of the same commit could install
+          # different code - which is exactly what requirements-lock.txt exists to
+          # prevent. Verified: that open-range install resolved python-dotenv 1.2.4
+          # while the lock pins 1.2.3, and the staleness guard caught the drift.
+          pip install -r requirements-lock.txt
+          # Local packages last, with --no-deps: their own dependency ranges must
+          # not reintroduce unpinned versions over the lock.
+          pip install -e "./src/tracker-core" --no-deps
+          pip install -e . --no-deps
 
       - name: Restore discovery and news history
         id: restore-intel
