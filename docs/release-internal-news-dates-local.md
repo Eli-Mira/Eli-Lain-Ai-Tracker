@@ -1,6 +1,6 @@
 # Internal news dates — local repair candidate (October 2, 2026)
 
-Status: **V2 LOCAL GREEN (831 tests); renewed independent review and fresh CI verification pending. NOT release-approved.** V1 was review-blocked and is not approved. Its timezone-ambiguity correction is now independently read back and regression-tested by the parent; health rendering remains separate and open. Public news remains excluded.
+Status: **HISTORICAL LOCAL CHECKPOINT — superseded by `release-internal-news-dates-hosted-verification.md`.** V2 was independently approved and shipped as `d252865af1e2f7316d54e6fa73f6d479511298b2`, verified in fresh CI36942612716. The sections below preserve the precommit checkpoint, not current pending review/CI gates. Blocked V1 was never approval. Separate feed-health and newly reproduced ingestion ambiguity remain open; public news stays excluded and customer release is NOT approved.
 
 ## Confirmed boundary failure
 
