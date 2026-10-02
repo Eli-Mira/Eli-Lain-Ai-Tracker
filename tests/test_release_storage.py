@@ -326,3 +326,66 @@ def test_sqlite_offsetless_and_naive_observations_agree_and_survive_restart(tmp_
     assert values["Offsetless observation"] == OFFSETLESS_STORED_UTC
     assert values["Naive observation"] == OFFSETLESS_STORED_UTC
     assert values["Offset aware observation"] == OFFSET_AWARE_STORED_UTC
+
+
+class _OffsetlessSpy(datetime):
+    """An offsetless wall clock that records whether astimezone() was used on it.
+
+    On a UTC host the wrong and right stored values coincide, so a value
+    assertion cannot tell the shipped guard from the old buggy call. This spy
+    makes the decision observable everywhere: the fixed guard must attach UTC
+    WITHOUT ever calling astimezone(), because astimezone() on an offsetless
+    value reads the wall clock as machine-local time.
+
+    Which host proves what:
+      * this test (any host, Windows included): fails RED if the guard is reverted.
+      * a non-UTC POSIX host: also reproduces the original wrong stored value.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, *args, **kwargs)
+
+    def astimezone(self, tz=None):
+        # The defect is calling astimezone() while the value is STILL offsetless:
+        # that is what reads the wall clock as machine-local time. Calling it
+        # after the guard has already attached UTC is a no-op and is fine.
+        if self.utcoffset() is None:
+            type(self).offsetless_astimezone_calls += 1
+        return super().astimezone(tz)
+
+
+def test_offsetless_ingestion_never_routes_through_astimezone(tmp_path):
+    """The defect is the CALL, not the value: on UTC hosts the value looks right."""
+    _OffsetlessSpy.offsetless_astimezone_calls = 0
+    ambiguous = _OffsetlessSpy(2024, 1, 2, 10, 15, tzinfo=UnspecifiedOffset())
+    store = SQLiteStore(tmp_path / "news.db")
+    try:
+        assert store.save_items([news("Offsetless observation", fetched_date=ambiguous)]) == 1
+        assert store.get_items(days=0)[0]["fetched_date"] == OFFSETLESS_STORED_UTC
+    finally:
+        store.close()
+    assert _OffsetlessSpy.offsetless_astimezone_calls == 0, (
+        "offsetless observations must be given UTC directly, never passed through "
+        "astimezone() while still offsetless, which reads the wall clock as "
+        "machine-local time")
+
+
+def test_offsetless_and_naive_and_aware_still_differ_as_required(tmp_path):
+    """Control whose expected values DIFFER, so a broad flattening guard fails."""
+    _OffsetlessSpy.offsetless_astimezone_calls = 0
+    store = SQLiteStore(tmp_path / "news.db")
+    try:
+        assert store.save_items([
+            news("Offsetless", fetched_date=_OffsetlessSpy(2024, 1, 2, 10, 15, tzinfo=UnspecifiedOffset())),
+            news("Naive", fetched_date=datetime(2024, 1, 2, 10, 15)),
+            news("Aware", fetched_date=datetime(2024, 1, 2, 10, 15, tzinfo=timezone(timedelta(hours=2)))),
+        ]) == 3
+        values = {row["title"]: row["fetched_date"] for row in store.get_items(days=0)}
+    finally:
+        store.close()
+    assert values["Offsetless"] == OFFSETLESS_STORED_UTC
+    assert values["Naive"] == OFFSETLESS_STORED_UTC
+    assert values["Aware"] == OFFSET_AWARE_STORED_UTC
+    assert values["Aware"] != values["Offsetless"], \
+        "a genuinely offset-aware observation must not be flattened to the wall clock"
+    assert _OffsetlessSpy.offsetless_astimezone_calls == 0
