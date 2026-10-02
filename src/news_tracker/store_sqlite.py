@@ -103,9 +103,11 @@ class SQLiteStore:
         for item in items:
             try:
                 # NewsItem's legacy default is utcnow() (naive UTC); aware
-                # observations are normalized without replacing their age.
+                # observations are normalized without replacing their age. A
+                # non-null tzinfo can still supply no offset, and astimezone()
+                # would then read the wall clock as machine-local time.
                 fetched = item.fetched_date
-                if fetched.tzinfo is None:
+                if fetched.tzinfo is None or fetched.utcoffset() is None:
                     fetched = fetched.replace(tzinfo=timezone.utc)
                 cursor = conn.execute("""
                     INSERT OR IGNORE INTO news_items

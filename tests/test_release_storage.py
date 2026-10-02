@@ -1,5 +1,5 @@
 """Customer release storage regressions; all state is isolated in pytest scratch."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import json
 import os
 
@@ -11,6 +11,25 @@ from news_tracker.store_sqlite import SQLiteStore
 from tracker_core.schema import NewsItem, SourceType
 
 NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+
+# 10:15 wall clock with no usable offset. A real feed/adapter can hand the
+# schema a datetime whose tzinfo object is non-null but supplies no offset.
+OFFSETLESS_WALL = datetime(2024, 1, 2, 10, 15)
+OFFSETLESS_STORED_UTC = "2024-01-02 10:15:00.000000"
+# The same wall clock at +02:00 is a genuinely known instant: 08:15 UTC. It must
+# stay 08:15, proving the guard does not flatten real offsets into the wall time.
+OFFSET_AWARE_STORED_UTC = "2024-01-02 08:15:00.000000"
+
+
+class UnspecifiedOffset(tzinfo):
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "UNSPECIFIED"
 
 
 def news(title="Observed AI release", **kwargs):
@@ -265,3 +284,45 @@ def test_sqlite_future_observation_is_history_not_recent_news(tmp_path):
     assert store.get_items(days=7) == []
     assert store.get_weekly_summary()["total_items"] == 0
     store.close()
+
+
+def test_schema_keeps_accepting_observation_with_non_null_timezone_without_offset():
+    """Storage is what must be corrected; the model still accepts this input."""
+    ambiguous = news(fetched_date=OFFSETLESS_WALL.replace(tzinfo=UnspecifiedOffset()))
+    assert ambiguous.fetched_date.tzinfo is not None
+    assert ambiguous.fetched_date.utcoffset() is None
+
+
+def test_sqlite_offsetless_observation_never_becomes_machine_local_time(tmp_path):
+    """The SQLite fetched_date contract attaches UTC to offsetless observations.
+
+    A non-null tzinfo with no offset must not send astimezone() through the host
+    machine's local zone; on a UTC host the old and new values coincide, so this
+    asserts the contract everywhere and reproduces the defect on non-UTC hosts.
+    """
+    store = SQLiteStore(tmp_path / "news.db")
+    assert store.save_items([
+        news("Offsetless observation", fetched_date=OFFSETLESS_WALL.replace(tzinfo=UnspecifiedOffset()))
+    ]) == 1
+    assert store.get_items(days=0)[0]["fetched_date"] == OFFSETLESS_STORED_UTC
+    store.close()
+
+
+def test_sqlite_offsetless_and_naive_observations_agree_and_survive_restart(tmp_path):
+    """Unknown-offset and naive inputs share one contract; a real offset is kept."""
+    store = SQLiteStore(tmp_path / "news.db")
+    assert store.save_items([
+        news("Offsetless observation", fetched_date=OFFSETLESS_WALL.replace(tzinfo=UnspecifiedOffset())),
+        news("Naive observation", fetched_date=OFFSETLESS_WALL),
+        news("Offset aware observation",
+             fetched_date=OFFSETLESS_WALL.replace(tzinfo=timezone(timedelta(hours=2)))),
+    ]) == 3
+    values = {row["title"]: row["fetched_date"] for row in store.get_items(days=0)}
+    store.close()
+    restored = SQLiteStore(tmp_path / "news.db")
+    assert {row["title"]: row["fetched_date"]
+            for row in restored.get_items(days=0)} == values
+    restored.close()
+    assert values["Offsetless observation"] == OFFSETLESS_STORED_UTC
+    assert values["Naive observation"] == OFFSETLESS_STORED_UTC
+    assert values["Offset aware observation"] == OFFSET_AWARE_STORED_UTC
