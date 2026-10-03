@@ -20,10 +20,11 @@ from test_report_delivery import (  # reuse the realistic existing protocol fixt
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_release_delivers_the_standalone_html_file_to_both_channels(artifact_dir):
+def test_explicit_attachment_option_delivers_exact_file_to_both_channels(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
     protocol = Protocol(data)
-    result = run(artifact_dir, protocol)
+    result = module().deliver_report(artifact_dir, environ={**ENV, "PUBLIC_REPORT_ATTACHMENT": "true"},
+        transport=httpx.MockTransport(protocol), resolver=lambda _: ["8.8.8.8"])
     documents = [r for r in protocol.calls if r.method == "POST"
                  and r.headers["host"] == "api.telegram.org" and r.url.path.endswith("/sendDocument")]
     uploads = [r for r in protocol.calls if r.method == "POST"

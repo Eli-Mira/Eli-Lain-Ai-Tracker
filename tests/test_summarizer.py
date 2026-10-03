@@ -1,8 +1,7 @@
 """Tests for news tracker summarizer."""
 
 import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch
+import httpx
 
 from news_tracker.summarizer import Summarizer
 from tracker_core.schema import NewsItem, SourceType
@@ -41,34 +40,27 @@ class TestSummarizer:
         assert len(result[0].summary) > 0
     
     @pytest.mark.asyncio
-    async def test_call_llm_success(self):
-        """Test LLM call with successful response."""
-        summarizer = Summarizer(config={"api_key": "test-key", "base_url": "http://test.com/v1"})
-        
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": '[{"summary": "Test summary", "dedup_key": "test"}]'}}]
-        }
-        
-        with patch('httpx.AsyncClient') as mock_client:
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
-            
-            result = await summarizer._call_llm("Test prompt")
-            
-            assert "Test summary" in result
+    async def test_call_llm_success(self, monkeypatch):
+        """Exercise production HTTP parsing, not an invented AsyncClient shape."""
+        summarizer = Summarizer(config={"api_key": "test-key", "base_url": "https://example.org/v1"})
+        original = httpx.AsyncClient
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "choices": [{"message": {"content": '[{"summary": "Test summary", "dedup_key": "test"}]'}}]}))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(**kw, transport=transport))
+        result = await summarizer._call_llm("Test prompt")
+        assert "Test summary" in result
     
     @pytest.mark.asyncio
-    async def test_call_llm_failure(self):
-        """Test LLM call with failure."""
+    async def test_call_llm_failure(self, monkeypatch):
+        """A real transport error is not a successful AI response."""
         summarizer = Summarizer()
-        
-        with patch('httpx.AsyncClient') as mock_client:
-            mock_client.return_value.__aenter__.return_value.post.side_effect = Exception("API error")
-            
-            # Failure is not a successful AI response; the public wrapper supplies a labelled excerpt.
-            with pytest.raises(RuntimeError, match="AI summarization unavailable"):
-                await summarizer._call_llm("Test prompt")
+        def failed(request):
+            raise httpx.ConnectError("private-canary", request=request)
+        original = httpx.AsyncClient
+        transport = httpx.MockTransport(failed)
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(**kw, transport=transport))
+        with pytest.raises(RuntimeError, match="AI summarization unavailable"):
+            await summarizer._call_llm("Test prompt")
 
 
 @pytest.mark.asyncio

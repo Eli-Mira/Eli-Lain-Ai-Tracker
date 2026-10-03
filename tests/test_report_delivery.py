@@ -156,10 +156,15 @@ class Protocol:
         if host == "discord.com":
             assert request.headers["authorization"] == "Bot " + ENV["DISCORD_BOT_TOKEN"]
             if request.method == "POST" and path == "/api/v10/channels/" + ENV["DISCORD_CHANNEL_ID"] + "/messages":
-                fields, files = parse_multipart(request)
-                self.brief = json.loads(fields["payload_json"])["content"]
-                assert files["files[0]"][0] == "index.html"
-                assert files["files[0]"][1] == self.data
+                if request.headers["content-type"].startswith("application/json"):
+                    payload = json.loads(request.content)
+                    assert payload["allowed_mentions"] == {"parse": [], "replied_user": False}
+                    self.brief = payload["content"]
+                else:
+                    fields, files = parse_multipart(request)
+                    self.brief = json.loads(fields["payload_json"])["content"]
+                    assert files["files[0]"][0] == "index.html"
+                    assert files["files[0]"][1] == self.data
                 return httpx.Response(200, json={"id": "999999999999999999", "channel_id": ENV["DISCORD_CHANNEL_ID"],
                                                   "content": self.brief,
                                                   "attachments": [{"filename": "index.html",
@@ -425,8 +430,8 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert result.hosted.url == URL
     assert result.hosted.sha256 == hashlib.sha256(data).hexdigest()
     assert result.telegram.confirmation == "receipt-confirmed"
-    # text message plus the attached standalone file: "42" is the text, "43" the document
-    assert result.telegram.message_id == "42/43"
+    # Ordinary R08 public delivery sends a hosted link, not a document.
+    assert result.telegram.message_id == "42"
     assert result.discord.confirmation == "independently-read-back"
     assert result.discord.message_id == "999999999999999999"
     assert len(result.brief) < 1500
@@ -437,7 +442,7 @@ def test_single_file_digest_readback_then_both_channel_receipts(artifact_dir):
     assert "not a fresh fetch" in result.brief
     assert URL in result.brief
     assert [r.headers["host"] for r in protocol.calls] == [
-        URL_HOST, "api.telegram.org", "api.telegram.org", "discord.com", "discord.com"], \
+        URL_HOST, "api.telegram.org", "discord.com", "discord.com"], \
         "the default path must contact Cloudflare Pages and the channels, never Netlify"
     assert (artifact_dir / "index.html").read_bytes() == data
 

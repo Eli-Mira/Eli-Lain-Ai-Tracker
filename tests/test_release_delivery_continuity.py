@@ -32,9 +32,9 @@ def test_changed_telegram_destination_does_not_reuse_old_confirmation(artifact_d
         transport=httpx.MockTransport(protocol), resolver=lambda host: ["8.8.8.8"],
         sleep=lambda seconds: None, state_path=state)
     assert result.telegram.confirmation == "receipt-confirmed"
-    assert result.telegram.message_id == "52/53"
+    assert result.telegram.message_id == "52"
     assert result.discord.confirmation == "previously-confirmed"
-    assert sum(request.headers["host"] == "api.telegram.org" for request in protocol.calls) == 2
+    assert sum(request.headers["host"] == "api.telegram.org" for request in protocol.calls) == 1
     persisted = state.read_text(encoding="utf-8")
     assert other_env["TELEGRAM_CHAT_ID"] not in persisted
     assert all(ENV[name] not in persisted for name in

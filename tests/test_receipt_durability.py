@@ -29,7 +29,7 @@ from intel_sources.report_delivery import DeliveryConfig, DeliveryResult
 def _config(**overrides):
     base = dict(TELEGRAM_BOT_TOKEN="t-token", TELEGRAM_CHAT_ID="123456",
                 DISCORD_BOT_TOKEN="d-token", DISCORD_CHANNEL_ID="123456789012345678",
-                PUBLIC_REPORT_URL=rd.PAGES_PUBLIC_URL)
+                PUBLIC_REPORT_URL=rd.PAGES_PUBLIC_URL, PUBLIC_REPORT_ATTACHMENT="true")
     base.update(overrides)
     return DeliveryConfig.from_env(base)
 

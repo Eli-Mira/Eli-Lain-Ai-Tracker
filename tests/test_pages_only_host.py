@@ -126,10 +126,10 @@ def test_pages_failure_still_blocks_delivery_without_a_mirror(artifact_dir):
     assert not any(r.headers['host'] in {'api.telegram.org', 'discord.com'} for r in protocol.calls)
 
 
-def test_attachment_is_still_delivered_not_merely_linked(artifact_dir):
+def test_explicit_optional_attachment_is_still_delivered(artifact_dir):
     data = (artifact_dir / 'index.html').read_bytes()
     protocol = PagesOnly(data)
-    deliver(artifact_dir, protocol, env=PAGES_ENV)
+    deliver(artifact_dir, protocol, env={**PAGES_ENV, 'PUBLIC_REPORT_ATTACHMENT': 'true'})
     uploads = [r for r in protocol.calls if r.method == 'POST' and r.headers['host'] == 'discord.com']
     assert uploads
     _, files = parse_multipart(uploads[-1])

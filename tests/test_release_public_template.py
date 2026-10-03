@@ -131,15 +131,13 @@ def test_typed_metadata_advertised_inventory_matches_reachable_typed_rows(tmp_pa
     assert soup.select('.public-metadata-unavailable') and not soup.select('.public-metadata')
 
 
-def test_public_layout_keeps_evaluated_shortlist_first_and_does_not_claim_unchecked_changes(tmp_path):
+def test_public_layout_starts_explore_without_personal_review_or_unchecked_changes(tmp_path):
     artifact = render_export(tmp_path)
     soup = BeautifulSoup(artifact.read_text(encoding='utf-8'), 'html.parser')
     sections = [s.get('id') for s in soup.select('section.tracker')]
-    # The reviewed project decision is the first thing a consumer reads; the raw
-    # catalog is retained underneath, never in place of it.
-    assert sections[0] == 'project-shortlists'
-    assert sections.index('project-shortlists') < sections.index('discoveries')
-    assert sections[1:4] == ['providers', 'news', 'discoveries']
+    # R09 supersedes the earlier personalized decision-first public product.
+    assert sections == ['discoveries', 'public-scope', 'source-health']
+    assert not soup.select('#project-shortlists')
     assert 'changes' not in sections and 'actions' not in sections
     assert 'No material changes detected' not in soup.text
     assert 'Provider observations excluded from this public export' in soup.select_one('#providers').text
@@ -227,7 +225,7 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
     state = release_state()
     artifact = render_export(tmp_path, state)
     context = release_browser.new_context(viewport={'width': width, 'height': 900},
-        offline=True, java_script_enabled=javascript)
+        offline=True, java_script_enabled=javascript, color_scheme='dark')
     page = context.new_page()
     requests, errors, console_errors = [], [], []
     page.on('request', lambda request: requests.append(request.url))
@@ -235,16 +233,11 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
     page.on('console', lambda msg: console_errors.append(msg.text) if msg.type == 'error' else None)
     try:
         page.goto(artifact.as_uri(), wait_until='load')
-        # Measured before any interaction, so auto-scroll cannot mask a layout
-        # regression: the evaluated shortlist is the first thing on screen and the
-        # raw catalog sits below it. This is the same 'no deep scrolling for the
-        # main experience' intent the old `#discoveries` top < 900 assertion
-        # covered, re-anchored to the section that is now first; the catalog is
-        # intentionally far down because it starts collapsed.
+        # R09: Explore is the first public section. Measure before interaction,
+        # so native disclosure auto-scroll cannot hide a layout regression.
         assert page.evaluate('scrollY') == 0
-        assert page.locator('#project-shortlists').evaluate('(x)=>x.getBoundingClientRect().top') < 900
-        assert page.locator('#project-shortlists').evaluate('(x)=>x.getBoundingClientRect().top') < \
-               page.locator('#discoveries').evaluate('(x)=>x.getBoundingClientRect().top')
+        assert page.locator('#discoveries').evaluate('(x)=>x.getBoundingClientRect().top') < 300
+        assert page.locator('#project-shortlists').count() == 0
         # Nothing in a public report may start expanded.
         assert page.locator('details[open]').count() == 0
         # Collapsed by default: the status must point at the disclosure rather
@@ -257,7 +250,7 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
         page.locator('#discovery-inventory > summary').click()
         assert page.locator('.discovery-item:visible').count() == len(state['items'])
         assert page.locator('.public-metadata').count() == len(state['items'])
-        assert page.locator('.wrap').evaluate('(x)=>getComputedStyle(x).maxWidth') == '640px'
+        assert page.locator('.wrap').evaluate('(x)=>getComputedStyle(x).maxWidth') == '1120px'
         assert page.locator('.portrait').evaluate('(x)=>getComputedStyle(x).width') == '64px'
         assert page.locator('body').evaluate('(x)=>getComputedStyle(x).backgroundColor') == 'rgb(5, 7, 10)'
         assert page.locator('h1').evaluate('(x)=>getComputedStyle(x).color') == 'rgb(111, 255, 233)'
@@ -267,7 +260,8 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
         assert contrast_ratio(*colors) >= 4.5, colors
         if javascript:
             # The controller reports the open, unfiltered archive.
-            assert count.text_content() == '5 discoveries, no filter applied'
+            from playwright.sync_api import expect
+            expect(count).to_have_text('5 discoveries, no filter applied')
         else:
             # Without the controller the static line stands; it never claims
             # rows are on screen, which is the truthful thing to say.
@@ -310,9 +304,11 @@ def test_release_chromium_all_controls_offline_metadata_and_readable_counters(re
         assert evidence.get_attribute('open') is not None
         assert OBSERVED in evidence.inner_text()
         assert 'PRIVATE_' not in page.locator('body').inner_text()
-        assert page.locator('[onerror], [onclick], img, iframe, script[src]').count() == 0
+        assert page.locator('[onerror], [onclick], iframe, script[src]').count() == 0
+        from tracker_core.branding import avatar_data_uri
+        assert page.locator('img').get_attribute('src') == avatar_data_uri()
         for href in page.locator('a[href]').evaluate_all('(xs)=>xs.map(x=>x.getAttribute("href"))'):
-            assert href.startswith(('https://openrouter.ai/', 'https://unorouter.com/',
+            assert href in {'#discoveries', '#source-health', '#public-scope'} or href.startswith(('https://openrouter.ai/', 'https://unorouter.com/',
                 'https://api.unorouter.com/', 'https://github.com/', 'https://skills.sh'))
         assert requests == [artifact.as_uri()]
         assert not errors and not console_errors

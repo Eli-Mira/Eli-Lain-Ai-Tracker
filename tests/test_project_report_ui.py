@@ -46,7 +46,7 @@ def test_lain_render_accepts_evaluated_groups_and_preserves_inventory(tmp_path):
     assert (root / "src/templates/report_template_lain.html").read_bytes() == (root / "src/tracker-core/templates/report_template_lain.html").read_bytes()
 
 
-def test_public_shortlists_review_full_validated_inventory_not_display_cap():
+def test_public_inventory_has_no_personal_review_and_keeps_cap_disclosure():
     import copy
     from intel_sources.public_report import build_public_payload
     first = discovery("skills:aaa/public/unreviewed")
@@ -59,25 +59,19 @@ def test_public_shortlists_review_full_validated_inventory_not_display_cap():
     before = copy.deepcopy(state)
     payload = build_public_payload(state, now=NOW, max_items_per_source=1)
     assert [item["id"] for item in payload["tool_items"]] == [first["id"]]
-    assert "recommendation_groups" in payload, "public project shortlists are missing"
-    shortlist = payload["recommendation_groups"]["hearth-pos"]["shortlist"]
-    assert [item["id"] for item in shortlist] == [TDD]
-    assert "evidence" not in shortlist[0], "raw evaluation evidence must never reach public renderer"
+    assert "recommendation_groups" not in payload
+    assert "recommendation_coverage" not in payload
+    assert payload['inventory_total'] == 2
     assert "PRIVATE_" not in str(payload) and "localhost" not in str(payload)
     assert "Eli-Lain-Ai-Tracker" not in str(payload)
-    assert payload["recommendation_coverage"] == {"reviewed_count": 1, "discovery_count": 2,
-        "inventory_count": 2, "shortlist_limit_per_project": 4, "exported_count": 1,
-        "max_items_per_source": 1, "inventory_replaced": False}
+    assert 'omitted by caller cap: 1' in payload['source_items'][0]['coverage']
     assert state == before
-    soup = BeautifulSoup(LainReporter().render(**payload), "html.parser")
-    assert "Decimal totals" in soup.select_one("#project-shortlists").text
+    soup = BeautifulSoup(LainReporter().render(**payload, public_export=True), "html.parser")
+    assert soup.select_one('#project-shortlists') is None
+    assert 'Decimal totals' not in soup.text
     assert len(soup.select("#discoveries .discovery-item")) == 1
-    for anchor in soup.select("#project-shortlists a[href]"):
+    for anchor in soup.select("#discoveries a[href]"):
         assert anchor["href"].startswith("https://skills.sh/") or anchor["href"].startswith("https://github.com/")
-    for entry in payload["recommendation_groups"]["hearth-pos"]["shortlist"]:
-        assert set(entry) >= {"id", "reason", "constraints", "next_validation", "freshness", "confidence",
-                              "license", "cost", "support", "source_urls"}
-        assert "evidence" not in entry and "summary" not in entry
 
 
 def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public_chromium(tmp_path):
@@ -111,19 +105,15 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
     # is real, not that the inventory happens to exceed some live count.
     assert coverage["reviewed_count"] > 0
     assert 0 < coverage["discovery_count"] <= len(state["items"])
-    public_coverage = payload["recommendation_coverage"]
-    assert public_coverage["inventory_replaced"] is False
-    assert public_coverage["reviewed_count"] > 0
-    # Exported rows are capped per public source; the cap is honoured and disclosed.
-    assert public_coverage["exported_count"] <= (
-        public_coverage["max_items_per_source"] * len(PUBLIC_DISCOVERY_SOURCES))
-    assert public_coverage["exported_count"] <= public_coverage["inventory_count"]
+    assert 'recommendation_groups' not in payload
+    assert len(payload['tool_items']) <= 25 * len(PUBLIC_DISCOVERY_SOURCES)
+    assert len(payload['tool_items']) <= payload['inventory_total']
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH"))
         try:
             for path, exported, expected, collapsed in (
                     (internal, len(state["items"]), coverage["reviewed_count"], False),
-                    (public, len(payload["tool_items"]), payload["recommendation_coverage"]["reviewed_count"], True)):
+                    (public, len(payload["tool_items"]), 0, True)):
                 context = browser.new_context(viewport={"width": 1440, "height": 900}, offline=True)
                 page = context.new_page()
                 requests, errors = [], []
@@ -133,18 +123,21 @@ def test_real_saved_inventory_renders_advisory_shortlists_in_internal_and_public
                 rows = page.locator("#discoveries .discovery-item")
                 assert rows.count() == exported, "a row was dropped from the report"
                 if collapsed:
-                    # Public consumer: the catalog is an archive, the decision is first.
+                    # Public consumer: Explore first, no personalized decision view.
                     assert page.locator("#discoveries .discovery-item:visible").count() == 0
-                    assert page.locator("#project-shortlists").evaluate(
-                        "(x)=>x.getBoundingClientRect().top") < \
-                        page.locator("#discoveries").evaluate("(x)=>x.getBoundingClientRect().top")
+                    assert page.locator('#project-shortlists').count() == 0
+                    assert page.locator('#discoveries').evaluate('(x)=>x.getBoundingClientRect().top') < 300
                     page.locator("#discovery-inventory > summary").click()
                 assert page.locator("#discoveries .discovery-item:visible").count() == exported
-                assert page.locator("#project-shortlists .project-group").count() == 3
-                assert page.locator("#recommendation-coverage").text_content().startswith(f"{expected} reviewed / ")
-                cards = page.locator("#project-shortlists .recommendation-item")
-                assert cards.count() > 0
-                assert cards.first.get_attribute("data-id")
+                if collapsed:
+                    assert page.locator('#project-shortlists').count() == 0
+                    assert 'Hearth POS' not in page.locator('body').inner_text()
+                else:
+                    assert page.locator("#project-shortlists .project-group").count() == 3
+                    assert page.locator("#recommendation-coverage").text_content().startswith(f"{expected} reviewed / ")
+                    cards = page.locator("#project-shortlists .recommendation-item")
+                    assert cards.count() > 0
+                    assert cards.first.get_attribute("data-id")
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 assert requests == [path.as_uri()] and not errors
                 if exported != len(state["items"]):

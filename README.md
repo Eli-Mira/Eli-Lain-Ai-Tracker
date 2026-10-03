@@ -1,6 +1,8 @@
 # Eli Lain — AI/Tech News Tracker
 
-> Automated digest of AI/tech news, pushed to Discord, Telegram, WhatsApp, and email via GitHub Actions.
+> Public AI/tool dashboard: [Open Eli Lain Intel](https://eli-lain-intel.pages.dev/). Ordinary public Telegram/Discord notifications share this hosted page, not a required HTML download.
+>
+> Hosted release acceptance is separate from local implementation; publishing remains opt-in.
 
 AI/Tech News Tracker — pulls latest developments from GitHub, Reddit, Hacker News, arXiv, and tech news sites.
 
@@ -60,9 +62,13 @@ python main.py report --theme lain
 
 ## Output
 
-- Daily JSON batches in `data/news_YYYYMMDD.json`
-- HTML reports in `reports/news_YYYYMMDD.html`
-- Deduplicated, filtered, and summarized items
+- Routine internal HTML replaces `reports/latest.html`; sanitized public HTML replaces `public/index.html`.
+- Current deduplicated discovery state and bounded first-seen/fingerprint metadata live in `data/intel_state.json`; the working news SQLite database and cooldowns are preserved.
+- Public notifications are hosted-link-first by default. An HTML attachment is secondary and explicit (`PUBLIC_REPORT_ATTACHMENT=true` or `scripts/publish_report.py --attach-html`).
+- Restart/partial-failure receipts are mode-bound and capped; no exactly-once guarantee or automatic send retry.
+- Existing archives are not deleted. `python scripts/cleanup_local_outputs.py --dry-run --json` lists exact candidates/exclusions for separate approval.
+
+See [link-first delivery](docs/link-first-delivery.md) and [local retention](docs/local-retention.md) for settings, bounds, safety limits and integration contracts.
 
 ## Secrets
 

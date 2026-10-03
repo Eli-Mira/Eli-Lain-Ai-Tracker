@@ -451,7 +451,22 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
                       "project_types": sorted({t for t in row.get("project_types", [])
                                                if isinstance(t, str) and t in PROJECT_TYPES})
                           if isinstance(row.get("project_types"), list) else [],
-                      "freshness": freshness, "evidence": [evidence]})
+                      "freshness": freshness, "first_observed_at": first, "evidence": [evidence]})
+        # No cross-source popularity score. Models/providers expose no such metric.
+        metric = None
+        basis = {'github-trending': 'GitHub total stars',
+                 'skills-sh': 'Skills.sh all-time installs'}.get(source, 'Popularity unavailable for this source')
+        if isinstance(raw_evidence, dict):
+            if source == 'github-trending':
+                metric, basis = raw_evidence.get('total_stars'), 'GitHub total stars'
+            elif source == 'skills-sh':
+                views = raw_evidence.get('views')
+                all_time = views.get('all-time') if isinstance(views, dict) else None
+                metric = all_time.get('installs') if isinstance(all_time, dict) else None
+                basis = 'Skills.sh all-time installs'
+        if type(metric) is not int or not 0 <= metric <= 10_000_000_000:
+            metric = None
+        tools[-1]['popularity'] = {'value': metric, 'basis': basis}
         metadata = _public_metadata(row, source, now)
         if metadata:
             tools[-1]['public_metadata'] = metadata
@@ -460,34 +475,13 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
             raise ValueError('public inventory exceeds row limit')
     full_inventory = tools
     inventory_counts = dict(counts)
-    discovery = [{"id": row["id"], "headline": row["headline"], "url": row["url"],
-                  "source": row["source"], "freshness": row["freshness"],
-                  "checked_at": None if row["evidence"][0]["observed_at"] == "not supplied" else row["evidence"][0]["observed_at"],
-                  "evidence": {}}
-                 for row in full_inventory if row["source"] in {"github-trending", "skills-sh"}]
-    recommendations = {}
-    if discovery:
-        from .recommendations import evaluate_projects
-        evaluated = evaluate_projects(discovery, now=now)
-        groups = evaluated["groups"]
-        reviewed = set()
-        for group in groups.values():
-            for category in ("shortlist", "deferred", "excluded"):
-                for entry in group[category]:
-                    reviewed.add(entry["id"])
-                    entry.pop("evidence", None)
-        recommendations = {"recommendation_groups": groups, "recommendation_coverage": {
-            "reviewed_count": len(reviewed), "discovery_count": len(discovery),
-            "inventory_count": len(full_inventory), "shortlist_limit_per_project": 4,
-            "max_items_per_source": max_items_per_source, "inventory_replaced": False}}
+    # Personalized evaluation belongs only to explicitly requested internal views.
     tools = []
     counts = {name: 0 for name in PUBLIC_SOURCES}
     for row in full_inventory:
         if max_items_per_source is None or counts[row["source"]] < max_items_per_source:
             tools.append(row)
             counts[row["source"]] += 1
-    if recommendations:
-        recommendations["recommendation_coverage"]["exported_count"] = len(tools)
     public_sources = []
     for name in sorted(set(sources) | {name for name, count in inventory_counts.items() if count}):
         row = sources.get(name, {})
@@ -504,7 +498,7 @@ def build_public_payload(state: dict[str, Any], *, now: datetime | None = None,
                                             f" Saved source rows: {saved_counts[name]:,}; excluded by public policy or duplicate identity: "
                                             f"{saved_counts[name] - inventory_counts[name]:,}."
                                             + _public_windows(name, row) + _public_source_details(row))})
-    payload = {**recommendations, "api_items": [], "news_items": [], "tool_items": tools, "source_items": public_sources,
+    payload = {"inventory_total": len(full_inventory), "api_items": [], "news_items": [], "tool_items": tools, "source_items": public_sources,
             "change_items": [], "action_items": [], "report_date": now.strftime("%Y-%m-%d"),
             "generated_at": now.isoformat(), "persona_image_url": None, "baseline": False,
             "runtime_source": "Public sanitized export of saved observations; not a fresh fetch. Provider statuses, changes, actions and news are excluded, not evaluated by this export. Private source coverage is omitted."}
@@ -557,18 +551,29 @@ def _standalone_html(html: str) -> str:
     if len(html.encode('utf-8')) > MAX_PUBLIC_HTML_BYTES:
         raise ValueError('public HTML exceeds maximum size')
     soup = BeautifulSoup(html, "html.parser")
-    if soup.select("script[src], link, img, iframe, object, embed, form, base, audio, video, source"):
+    if soup.select("script[src], link, iframe, object, embed, form, base, audio, video, source"):
         raise ValueError("public template contains an external or active dependency")
+    from tracker_core.branding import avatar_data_uri, AVATAR_ALT
+    images = soup.select('img')
+    if len(images) > 1 or any(
+        dict(image.attrs) != {'src': avatar_data_uri(), 'alt': AVATAR_ALT}
+        for image in images
+    ):
+        raise ValueError("public template contains an untrusted image dependency")
     if any(re.search(r"(?i)(?:url\s*\(|@import)", style.get_text()) for style in soup.select("style")):
         raise ValueError("public template contains a CSS dependency")
-    if any(public_http_url(a.get("href")) != a.get("href") for a in soup.select("a[href]")):
+    # Only the three owned, existing dashboard anchors may bypass HTTP validation.
+    anchors = {'#discoveries', '#source-health', '#public-scope'}
+    if any(public_http_url(a.get("href")) != a.get("href")
+           and not (a.get('href') in anchors and soup.select_one(a['href']) is not None)
+           for a in soup.select("a[href]")):
         raise ValueError("public template contains an unsafe link dependency")
     if any(key.lower().startswith("on") for tag in soup.find_all(True) for key in tag.attrs):
         raise ValueError("public template contains an active event dependency")
     script_hashes = ["'sha256-" + base64.b64encode(hashlib.sha256(script.get_text().encode("utf-8")).digest()).decode("ascii") + "'"
                      for script in soup.select("script")]
     policy = ("default-src 'none'; script-src " + (" ".join(script_hashes) or "'none'") +
-              "; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; font-src 'none'; "
+              "; style-src 'unsafe-inline'; connect-src 'none'; img-src " + ("data:" if images else "'none'") + "; font-src 'none'; "
               "object-src 'none'; media-src 'none'; base-uri 'none'; form-action 'none'")
     if '<meta charset="UTF-8">' not in html:
         raise ValueError("public template head dependency is unsupported")

@@ -23,8 +23,9 @@ def test_paused_fruit_slicer_never_receives_active_report_recommendations():
         {'name': 'skills-sh', 'status': 'ok', 'checked_at': now.isoformat()}
     ]}
     public = build_public_payload(state, now=now)
-    assert set(public['recommendation_groups']) == set(evaluated['groups'])
-    html = LainReporter().render(**public)
+    assert 'recommendation_groups' not in public
+    html = LainReporter().render(**public, public_export=True)
+    assert 'hearth-pos' not in html and 'gesture-control' not in html
     assert 'data-project="fruit-slicer"' not in html
     assert 'Model fruit lifecycle' not in html
 
