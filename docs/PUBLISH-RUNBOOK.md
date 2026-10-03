@@ -31,19 +31,37 @@ loopback addresses — that part is clean. The problem is scope only.
 1. **Artwork rights.** The Lain JPEG is third-party and excluded from the MIT code
    licence. Publishing embeds it publicly. Replace it with your own art, or accept
    the risk knowingly.
-2. **Repository visibility.** The repo is `private` today. A public dashboard does
-   not require a public repo, and I recommend keeping it private. Open-sourcing is
-   a separate decision.
+2. **Repository visibility — DECIDED BY ELI 2026-10-03: keep it PRIVATE.** A public
+   dashboard does not require a public repo. Do not change visibility. Open-sourcing
+   is a separate, future decision.
 3. **The 13 old local archives** (26,110,024 bytes). Deletion is dry-run only.
    Unrelated to publishing; do it whenever.
 4. **Whether to notify.** The daily cron at 06:00 UTC will deploy and post to
    Telegram + Discord on its own, because `PUBLISH_ENABLED` and
    `CLOUDFLARE_PUBLISH_ENABLED` are both already `true`.
 
-## The publish step (only after the decisions above)
+## Archive status (measured 2026-10-03)
+
+The 13 files are **not unique data** and are safe to delete:
+
+- 7 files from Sept 28 (13–18 KB) contain **no report sections at all** — empty
+  development runs.
+- 6 files from Sept 30 (~4.3 MB each) hold 1,768–1,772 discovery rows; **503 of 506
+  embedded ids are still present in `data/intel_state.json`**. The 3 apparent
+  misses are regex artifacts (`openrouter:model`, `openrouter:provider`,
+  `unorouter:model`), not real items.
+- Nothing there exists only in the archives. Deleting them reclaims 26,110,024 bytes
+  and loses no observation.
+
+## The publish step (only after the remaining decisions)
 
 Pushing does **not** trigger a run — the workflow is `schedule` +
 `workflow_dispatch` only, so a push is safe on its own.
+
+**Timing:** the cron is `06:00 UTC` = **09:00 your clock** (Egypt is UTC+3). Both
+publish variables are already `true`, so the 09:00 run deploys and notifies without
+further action. To control timing, either publish deliberately before 09:00 or set
+`PUBLISH_ENABLED=false` / `CLOUDFLARE_PUBLISH_ENABLED=false` before pushing.
 
 ```bash
 cd C:/tmp/eli-lain-tracker
