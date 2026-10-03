@@ -3,12 +3,15 @@
 > Public AI/tool dashboard: [Open Eli Lain Intel](https://eli-lain-intel.pages.dev/). Ordinary public Telegram/Discord notifications share this hosted page, not a required HTML download.
 >
 > Hosted release acceptance is separate from local implementation; publishing remains opt-in.
+>
+> **Licence:** the MIT Licence covers source code only, not third-party artwork. See
+> [`THIRD-PARTY-NOTICE.md`](THIRD-PARTY-NOTICE.md) before forking or redistributing.
 
 AI/Tech News Tracker — pulls latest developments from GitHub, Reddit, Hacker News, arXiv, and tech news sites.
 
 ## How It Runs
 
-- **GitHub Actions** triggers the workflow daily at 11 AM Cairo time
+- **GitHub Actions** triggers the workflow daily at 09:00 Cairo time (06:00 UTC)
 - Fetches from GitHub releases, Reddit RSS, and tech news sources
 - Scores, summarizes, deduplicates
 - Generates an HTML report with the "lain" theme

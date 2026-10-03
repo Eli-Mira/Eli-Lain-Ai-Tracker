@@ -55,7 +55,9 @@ It was supplied/selected by the user, not fetched from GitHub or another service
 Original artist/rights-holder licence is not established; ownership and
 redistribution rights are **not** asserted. This artwork is **not covered by the
 repository's MIT code licence**. The page footer carries the provenance note;
-public release still needs appropriate artwork-rights review.
+public release still needs appropriate artwork-rights review. The full statement,
+including what a fork must do to replace or remove the image, lives in
+`THIRD-PARTY-NOTICE.md` at the repository root.
 
 The exporter accepts at most this one digest-bound JPEG with exact safe attributes;
 it does not accept arbitrary data URIs, SVG, remote images, `srcset`, event handlers

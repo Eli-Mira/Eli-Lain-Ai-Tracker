@@ -40,6 +40,14 @@ loopback addresses — that part is clean. The problem is scope only.
    Telegram + Discord on its own, because `PUBLISH_ENABLED` and
    `CLOUDFLARE_PUBLISH_ENABLED` are both already `true`.
 
+## Archive outcome (2026-10-03, authorized by Eli)
+
+7 empty template-stub files (Sept 28, 114,068 bytes total) were deleted after a
+byte-verified backup. They held the original design brief, not report data. The 6
+real Sept-30 reports (~25.5 MB) were **kept** — they contain real rows and Eli did
+not authorize removing them. `data/news.db` and `data/intel_state.json` were not
+touched.
+
 ## Archive status (measured 2026-10-03)
 
 The 13 files are **not unique data** and are safe to delete:
