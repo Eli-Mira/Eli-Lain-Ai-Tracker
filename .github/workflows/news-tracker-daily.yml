@@ -9,8 +9,9 @@ concurrency:
 
 on:
   schedule:
-    # Fixed UTC schedule; report check timestamps are timezone-aware.
-    - cron: '0 6 * * *'
+    # Africa/Cairo 10:00 daily with timezone support
+    - cron: '0 10 * * *'
+      timezone: 'Africa/Cairo'
   workflow_dispatch:
     inputs:
       publish_pages:
@@ -96,6 +97,14 @@ jobs:
         run: |
           python main.py today --theme lain
           python main.py audit --theme lain
+
+      - name: Run daily intel scan
+        id: daily-intel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTIFICATION_CHANNEL: ${{ secrets.NOTIFICATION_CHANNEL }}
+        run: |
+          python main.py daily --data-dir data
 
       - name: Build sanitized public export
         # Regenerated from saved state only: writes exactly one public/index.html.

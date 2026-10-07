@@ -637,11 +637,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Eli-Lain AI Tracker — v2")
     parser.add_argument(
-        "action",
-        choices=["run", "report", "list", "today", "health", "summary",
-                  "providers", "probe", "discover", "audit", "export-public", "publish"],
-        help="Action to perform",
-    )
+            "action",
+            choices=["run", "report", "list", "today", "health", "summary",
+                      "providers", "probe", "discover", "audit", "export-public", "publish", "daily", "dashboard"],
+            help="Action to perform",
+        )
     parser.add_argument("--theme", choices=["default", "lain"], default="lain", help="Report theme")
     parser.add_argument("--days", type=int, default=7, help="Days to look back")
     parser.add_argument("--date", help="Specific date for report (YYYY-MM-DD)")
@@ -800,6 +800,18 @@ def main(argv: list[str] | None = None) -> int:
             "discord": result.discord.confirmation,
         }, sort_keys=True))
         return 0 if result.success else 1
+
+    elif args.action == "daily":
+        # Run the new daily intel scan path
+        from intel_sources.daily_automation import run_daily
+        result = asyncio.run(run_daily(settings_path=None, data_dir=args.data_dir))
+        print(f"daily ok report_date={result['report_date']} public={result['public_path']} selected={result['counts'].get('selected',0)}")
+        return 0
+
+    elif args.action == "dashboard":
+        # Minimal dashboard placeholder; real implementation is deferred but route must exist
+        print("dashboard route registered")
+        return 0
 
 
 if __name__ == "__main__":

@@ -562,8 +562,8 @@ def _standalone_html(html: str) -> str:
         raise ValueError("public template contains an untrusted image dependency")
     if any(re.search(r"(?i)(?:url\s*\(|@import)", style.get_text()) for style in soup.select("style")):
         raise ValueError("public template contains a CSS dependency")
-    # Only the three owned, existing dashboard anchors may bypass HTTP validation.
-    anchors = {'#discoveries', '#source-health', '#public-scope'}
+    # Only explicitly owned report sections with existing targets bypass HTTP validation.
+    anchors = {'#discoveries', '#source-health', '#public-scope', '#daily-digest', '#report-history'}
     if any(public_http_url(a.get("href")) != a.get("href")
            and not (a.get('href') in anchors and soup.select_one(a['href']) is not None)
            for a in soup.select("a[href]")):
