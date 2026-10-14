@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -25,13 +26,23 @@ def main(argv: list[str] | None = None) -> int:
                                                  "verify the hosted bytes, then send the brief to Telegram and Discord.")
     parser.add_argument("--export-dir", type=Path, default=ROOT / "public",
                         help="Directory containing only the sanitized index.html (default: public)")
+    parser.add_argument("--state-path", type=Path, default=ROOT / "data/delivery_receipts.json",
+                        help="Persistent bounded channel confirmations (default: data/delivery_receipts.json)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--attach-html", action="store_const", const="true", dest="attachment",
+                      help="Explicit secondary standalone HTML export, in addition to the hosted link")
+    mode.add_argument("--link-only", action="store_const", const="false", dest="attachment",
+                      help="Explicitly disable attachments even if PUBLIC_REPORT_ATTACHMENT=true")
     parser.add_argument("--poll-attempts", type=int, default=30)
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.add_argument("--json", action="store_true", help="Print a machine-readable receipt summary")
     args = parser.parse_args(argv)
+    env = dict(os.environ)
+    if args.attachment is not None:
+        env["PUBLIC_REPORT_ATTACHMENT"] = args.attachment
     try:
         result = deliver_report(args.export_dir, poll_attempts=args.poll_attempts,
-                                poll_interval=args.poll_interval)
+                                poll_interval=args.poll_interval, state_path=args.state_path, environ=env)
     except DeliveryError as exc:
         payload = {"ok": False, "code": exc.code}
         if exc.result is not None:

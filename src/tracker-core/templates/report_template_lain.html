@@ -19,7 +19,7 @@
 -->
 {% endraw %}
 <!--
-  INTEL EXTENSION CONTRACT (original locked style and header preserved above):
+  INTEL EXTENSION CONTRACT (historical style reference; user-approved runtime dashboard below):
     change_items: headline, source, summary, url, change_type
     action_items: title, priority, reason, action, url
     source_items: name, status, checked_at, item_count, error, url, coverage
@@ -183,13 +183,56 @@
   .discovery-filters :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
   .tracker [hidden] { display: none !important; }
 </style>
+<style id="dashboard-layout">
+  /* User-authorized runtime evolution; historical first style is reference only. */
+  :root { --text-dim: #a1b8b4; --border: #36514f; --body-font: 'Segoe UI', Candara, 'Trebuchet MS', system-ui, sans-serif; }
+  :root { color-scheme: dark; }
+  :root[data-theme="light"] { --bg: #e6e9e8; --panel: #f0f2f1; --border: #9caeaa; --text: #182e2b; --text-dim: #445953; --cyan: #006b61; color-scheme: light; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg: #e6e9e8; --panel: #f0f2f1; --border: #9caeaa; --text: #182e2b; --text-dim: #445953; --cyan: #006b61; color-scheme: light; } }
+  body { font-family: var(--body-font); font-size: 17px; line-height: 1.65; }
+  #theme-toggle { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); padding: 8px 12px; min-height: 44px; cursor: pointer; margin-left: auto; }
+  #theme-toggle:disabled { cursor: default; opacity: .7; }
+  h1 { text-shadow: none; }
+  body::before { opacity: .3; }
+  .wrap { max-width: 1120px; padding: 24px 24px 48px; }
+  header.report-head { margin-bottom: 16px; gap: 16px; }
+  h1, .prompt, .cmd, .status { font-family: var(--font); }
+  h1 { font-size: clamp(18px, 3vw, 24px); }
+  .head-text { min-width: 0; overflow-wrap: anywhere; }
+  footer { overflow-wrap: anywhere; }
+  .portrait img { filter: none; }
+  .dashboard-nav { display: flex; flex-wrap: wrap; gap: 8px 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .dashboard-nav a { color: var(--cyan); display: inline-flex; align-items: center; min-height: 44px; text-underline-offset: 5px; }
+  section.tracker { margin-top: 20px; padding-top: 16px; scroll-margin-top: 16px; }
+  #discoveries { border-top: 0; padding-top: 0; }
+  .item-desc { font-size: 17px; }
+  .item-source, .tracker .public-metadata, .tracker .evidence, p.meta, footer { font-size: 14px; }
+  .tracker .item { padding: 16px 0; }
+  .tracker .public-metadata { columns: 2; column-gap: 28px; }
+  .public-metadata li { break-inside: avoid; }
+  .discovery-filters { display: grid; grid-template-columns: minmax(0,2fr) repeat(3,minmax(0,1fr)); gap: 12px; font-size: 14px; margin: 12px 0; }
+  .filter-field { min-width: 0; }
+  .filter-field label { display: block; margin-bottom: 4px; }
+  .discovery-filters input, .discovery-filters select { min-height: 44px; padding: 8px 10px; font-size: 17px; }
+  .tracker .inventory > summary, .tracker .evidence > summary { min-height: 44px; padding: 8px 0; }
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+  .asset-provenance { margin-bottom: 8px; }
+  @media (max-width: 600px) {
+    .wrap { padding: 20px 16px 36px; }
+    .discovery-filters { grid-template-columns: minmax(0,1fr); }
+    .tracker .public-metadata { columns: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { h1 { animation: none; } }
+</style>
 </head>
 <body>
 <div class="wrap">
 
   <header class="report-head">
     <div class="portrait">
-      {% if persona_image_url|safe_url %}
+      {% if branding_avatar %}
+      <img src="{{ branding_avatar }}" alt="{{ branding_avatar_alt }}">
+      {% elif not public_export and persona_image_url|safe_url %}
       <img src="{{ persona_image_url|safe_url }}" alt="lain">
       {% endif %}
     </div>
@@ -198,6 +241,12 @@
       <h1>lain // tracker report</h1>
     </div>
   </header>
+  <nav class="dashboard-nav" aria-label="Dashboard sections">
+    <a href="#discoveries">Explore</a>
+    <a href="#source-health">Sources &amp; coverage</a>
+    {% if public_export %}<a href="#public-scope">Public scope</a>{% endif %}
+    <button id="theme-toggle" type="button" disabled>Change theme</button>
+  </nav>
 
 {% set change_digest %}
   <!-- Extension: change-first digest; original inventory markup follows. -->
@@ -257,7 +306,7 @@
   {% endif %}
 {% endset %}
 
-{% if public_export %}{{ project_shortlists_view }}{% endif %}
+{% if not public_export %}
   <!-- Original provider section, extended with independent probe metadata. -->
   <section class="tracker api" id="providers" aria-label="Provider inventory">
     <div class="section-head"><span class="cmd">$ free-api-tracker</span></div>
@@ -309,7 +358,8 @@
     {% endif %}
   </section>
 
-{% if not public_export %}{{ project_shortlists_view }}{% endif %}
+{{ project_shortlists_view }}
+{% endif %}
 
   <!-- Extension: tools and model discoveries share the discovery contract. -->
   <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
@@ -318,20 +368,28 @@
     <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
     <noscript><p class="meta">Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.</p></noscript>
     <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
-      <label for="discovery-search">Search discoveries</label>
-      <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list" disabled>
-      <label for="discovery-project">Project type</label>
-      <select id="discovery-project" aria-controls="discovery-list" disabled><option value="">All project types</option></select>
-      <label for="discovery-source">Discovery source</label>
-      <select id="discovery-source" aria-controls="discovery-list" disabled><option value="">All sources</option></select>
+      <div class="filter-field"><label for="discovery-search">Search discoveries</label>
+      <input id="discovery-search" type="search" placeholder="Name, owner, topic or metadata" aria-controls="discovery-list" disabled></div>
+      <div class="filter-field"><label for="discovery-project">Project type</label>
+      <select id="discovery-project" aria-controls="discovery-list" disabled><option value="">All project types</option></select></div>
+      <div class="filter-field"><label for="discovery-source">Discovery source</label>
+      <select id="discovery-source" aria-controls="discovery-list" disabled><option value="">All sources</option></select></div>
+      <div class="filter-field"><label for="discovery-sort">Sort discoveries</label>
+      <select id="discovery-sort" aria-controls="discovery-list" aria-describedby="discovery-sort-basis" disabled>
+        <option value="identity">Source / identity</option><option value="popular">Popular</option><option value="latest">Latest (Newest)</option>
+      </select></div>
     </div>
+    <p class="meta" id="discovery-sort-basis">Source / identity order. Popular ranks within each source: GitHub total stars; Skills.sh all-time installs. Missing metrics last; ties by identity. Popularity is not suitability.</p>
+    {% if public_export %}<p class="meta" id="relevance-policy">Relevant is omitted: literal search filters public fields, but is not a suitability ranking.</p>{% endif %}
     <details id="discovery-inventory" class="inventory"{% if not public_export %} open{% endif %}>
-    <summary>Browse {% if recommendation_coverage and recommendation_coverage.inventory_count is defined %}complete exported inventory &#8212; {{ tool_items|length }} of {{ recommendation_coverage.inventory_count }} collected rows{% else %}the exported inventory &#8212; {{ tool_items|length }} collected rows, total collected count not supplied{% endif %}, not recommendations</summary>
+    <summary>Browse {% if inventory_total is not none %}complete exported inventory &#8212; {{ tool_items|length }} of {{ inventory_total }} collected rows{% elif recommendation_coverage and recommendation_coverage.inventory_count is defined %}complete exported inventory &#8212; {{ tool_items|length }} of {{ recommendation_coverage.inventory_count }} collected rows{% else %}the exported inventory &#8212; {{ tool_items|length }} collected rows, total collected count not supplied{% endif %}, not recommendations</summary>
     <ul class="items" id="discovery-list">
       {% for item in tool_items %}
-      <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
+      <li class="item discovery-item" data-id="{{ item.id|default('') }}" data-first-observed="{{ item.first_observed_at|default('', true) }}" data-popularity="{{ item.popularity.value if item.popularity is defined and item.popularity.value is not none else '' }}" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
         <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="item-source">{{ item.source }}</span></div>
         <div class="item-desc">{{ item.summary }}</div>
+        {% if public_export %}<div class="item-source">First observed: {{ item.first_observed_at|default('unknown', true) }} (not publication or report generation)</div>{% endif %}
+        {% if item.popularity is defined %}<div class="item-source">Popularity: {{ item.popularity.basis }}{% if item.popularity.value is not none %} — {{ item.popularity.value }}{% else %} — unknown{% endif %}</div>{% endif %}
         {% if item.public_metadata %}
         <ul class="public-metadata evidence-list" aria-label="Public source metadata">
           {% for field in item.public_metadata %}<li>{{ field.label }}: {{ field.value }}</li>{% endfor %}
@@ -386,6 +444,12 @@
   </section>
 {% endif %}
 
+{% if public_export %}
+  <section class="tracker" id="public-scope" aria-label="Public scope">
+    <p class="meta" id="providers">Provider observations excluded from this public export — not assessed.</p>
+    <p class="meta" id="news">News excluded from this public export — not assessed.</p>
+  </section>
+{% endif %}
   <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
     <div class="section-head"><span class="cmd">$ source-health</span></div>
     <p class="meta">Collection health and coverage; not provider availability.</p>
@@ -402,22 +466,48 @@
 
 
 
-  <footer>close the world, open the next tab · generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
+  <footer>{% if branding_avatar %}<div class="asset-provenance">Third-party artwork: Serial Experiments Lain, user-supplied; rights remain with their respective owners, not covered by the code's MIT licence.</div>{% endif %}close the world, open the next tab · generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
 
 </div>
 <script>
 (() => {
   'use strict';
+  const themeToggle = document.getElementById('theme-toggle');
+  const preference = window.matchMedia('(prefers-color-scheme: light)');
+  let chosenTheme = null;
+  try {
+    const saved = localStorage.getItem('lain-dashboard-theme');
+    if (saved === 'dark' || saved === 'light') chosenTheme = saved;
+  } catch (_) { /* Storage unavailable: keep a functional in-memory choice. */ }
+  const setTheme = () => {
+    const mode = chosenTheme || (preference.matches ? 'light' : 'dark');
+    document.documentElement.dataset.theme = mode;
+    themeToggle.textContent = mode === 'dark' ? 'Light theme' : 'Dark theme';
+    themeToggle.setAttribute('aria-label', themeToggle.textContent);
+  };
+  setTheme();
+  preference.addEventListener('change', () => { if (!chosenTheme) setTheme(); });
+  themeToggle.addEventListener('click', () => {
+    chosenTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('lain-dashboard-theme', chosenTheme); } catch (_) {}
+    setTheme();
+  });
+  themeToggle.disabled = false;
   const section = document.getElementById('discoveries');
   if (!section) return;
   const rows = Array.from(section.querySelectorAll('.discovery-item'));
   const search = document.getElementById('discovery-search');
   const project = document.getElementById('discovery-project');
   const source = document.getElementById('discovery-source');
+  const sort = document.getElementById('discovery-sort');
   const records = rows.map(row => ({
     row,
     text: row.textContent.toLowerCase(),
     source: row.dataset.source,
+    id: row.dataset.id,
+    firstObserved: row.dataset.firstObserved ? Date.parse(row.dataset.firstObserved) : null,
+    submillisecond: Number((row.dataset.firstObserved.match(/\.(\d{1,6})/)?.[1] || '').padEnd(6, '0').slice(3)) ,
+    popularity: row.dataset.popularity === '' ? null : Number(row.dataset.popularity),
     types: JSON.parse(row.dataset.projectTypes)
   }));
   const addOptions = (select, values) => {
@@ -464,10 +554,35 @@
   search.addEventListener('input', applyFilters);
   project.addEventListener('change', applyFilters);
   source.addEventListener('change', applyFilters);
+  const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  const identityOrder = (a, b) => compare(a.source, b.source) || compare(a.id, b.id);
+  sort.addEventListener('change', () => {
+    const ordered = [...records].sort((a, b) => {
+      if (sort.value === 'latest') {
+        return ((a.firstObserved === null) - (b.firstObserved === null)) ||
+          ((b.firstObserved ?? 0) - (a.firstObserved ?? 0)) ||
+          (b.submillisecond - a.submillisecond) || identityOrder(a, b);
+      }
+      if (sort.value !== 'popular') return identityOrder(a, b);
+      return compare(a.source, b.source) ||
+        ((a.popularity === null) - (b.popularity === null)) ||
+        ((b.popularity ?? 0) - (a.popularity ?? 0)) || compare(a.id, b.id);
+    });
+    const fragment = document.createDocumentFragment();
+    ordered.forEach(record => fragment.appendChild(record.row));
+    document.getElementById('discovery-list').appendChild(fragment);
+    document.getElementById('discovery-sort-basis').textContent = sort.value === 'popular'
+      ? 'Popular ranks within each source: GitHub total stars; Skills.sh all-time installs. Other catalogs have no popularity metric. Missing metrics last; ties by identity. Popularity is not suitability.'
+      : sort.value === 'latest'
+        ? 'Latest (Newest): First observed, newest first across sources; not publication, last observation or report regeneration. Unknown dates last; ties by source / identity.'
+        : 'Source / identity order. No popularity or suitability score.';
+    document.getElementById('discovery-inventory').open = true;
+    applyFilters();
+  });
   applyFilters();
   const archive = document.getElementById('discovery-inventory');
   if (archive) archive.addEventListener('toggle', applyFilters);
-  [search, project, source].forEach(control => { control.disabled = false; });
+  [search, project, source, sort].forEach(control => { control.disabled = false; });
 })();
 </script>
 </body>

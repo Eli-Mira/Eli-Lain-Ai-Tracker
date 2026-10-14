@@ -142,8 +142,11 @@ def test_unsafe_links_are_inert_and_all_untrusted_fields_are_escaped(theme, url)
                 action_items=[dict(title=malicious, priority=malicious, reason=malicious, action=malicious, url=url)],
                 source_items=[dict(name=malicious, status=malicious, error=malicious, coverage=malicious, url=url)],
                 persona_image_url=url, runtime_source=malicious)
-    assert not html.select("a[href]")
-    assert not html.select("img")
+    # Trusted dashboard navigation/branding is separate from untrusted links.
+    assert all(a['href'] in {'#discoveries', '#source-health'} for a in html.select("a[href]"))
+    from tracker_core.branding import avatar_data_uri
+    assert all(image['src'] == avatar_data_uri() for image in html.select('img'))
+    assert not html.select('#providers img, #discoveries img, #news img')
     assert not html.select("[onerror], [onclick]")
     assert all("window.pwned" not in script.text for script in html.select("script"))
     assert malicious in html.select_one("#providers").text
@@ -216,7 +219,7 @@ def test_browser_filters_intersect_reset_and_evidence_is_safe(browser, theme, wi
         dict(headline=malicious, source=malicious, summary="Untrusted row", url="javascript:alert(1)",
              project_types=[malicious], evidence=[{"result": malicious}]),
     ]
-    page = browser.new_page(viewport={"width": width, "height": 900})
+    page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme="dark")
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
@@ -254,7 +257,7 @@ def test_browser_filters_intersect_reset_and_evidence_is_safe(browser, theme, wi
             assert page.locator("body").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(5, 7, 10)"
             assert page.locator("h1").evaluate("el => getComputedStyle(el).color") == "rgb(111, 255, 233)"
             assert page.locator(".portrait").evaluate("el => getComputedStyle(el).width") == "64px"
-            assert page.locator(".wrap").evaluate("el => getComputedStyle(el).maxWidth") == "640px"
+            assert page.locator(".wrap").evaluate("el => getComputedStyle(el).maxWidth") == "1120px"
             assert page.locator("body").evaluate("el => getComputedStyle(el, '::before').pointerEvents") == "none"
             assert page.locator("h1").evaluate("el => getComputedStyle(el).animationDuration") == "0.9s"
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")

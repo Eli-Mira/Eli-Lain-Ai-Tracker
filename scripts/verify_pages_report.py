@@ -7,6 +7,10 @@ from pathlib import Path
 import sys
 import time
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "src/tracker-core"))
+
 from intel_sources.report_delivery import DeliveryError, load_artifact, verify_pages_report
 
 

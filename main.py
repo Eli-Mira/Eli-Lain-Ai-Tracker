@@ -34,7 +34,7 @@ from intel_sources.tools import fetch_tools
 
 from news_tracker.adapters import get_all_adapters
 from news_tracker.dedup_filter import deduplicate_and_filter
-from news_tracker.summarizer import summarize_news
+from news_tracker.summarizer import summarize_news, validate_config
 from news_tracker.scoring import score_and_categorize, group_by_category, Scorer
 from news_tracker.health import SourceHealthTracker
 from news_tracker.store_sqlite import SQLiteStore
@@ -468,7 +468,10 @@ class NewsTracker:
                     checked = parse_time(change.get("checked_at"))
                     if checked and 0 <= (now - checked).total_seconds() <= 24 * 3600:
                         change_items = [change, *change_items]
-        output_path = output_path or self.reports_dir / f"eli-lain_{run_date.strftime('%Y%m%d_%H%M%S')}.html"
+        from intel_sources.retention import latest_report_path
+        # Routine runs replace one latest file instead of appending a dated
+        # archive; an explicit caller path stays exactly that caller's file.
+        output_path = output_path or latest_report_path(self.reports_dir)
         recommendations: dict[str, Any] = {}
         if include_tools:
             # Advisory metadata-only views; never replace the broad inventory.
@@ -535,8 +538,9 @@ class NewsTracker:
             **recommendations,
         )
 
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_text(html, encoding="utf-8")
+        from intel_sources.retention import write_latest_text
+        # Atomic replace: a failed write preserves the previous good report.
+        write_latest_text(output_path, html)
         self.last_report_path = Path(output_path)
         logger.info(f"Report saved to {output_path}")
         return html
@@ -633,11 +637,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Eli-Lain AI Tracker — v2")
     parser.add_argument(
-        "action",
-        choices=["run", "report", "list", "today", "health", "summary",
-                  "providers", "probe", "discover", "audit", "export-public", "publish"],
-        help="Action to perform",
-    )
+            "action",
+            choices=["run", "report", "list", "today", "health", "summary",
+                      "providers", "probe", "discover", "audit", "export-public", "publish", "daily", "dashboard"],
+            help="Action to perform",
+        )
     parser.add_argument("--theme", choices=["default", "lain"], default="lain", help="Report theme")
     parser.add_argument("--days", type=int, default=7, help="Days to look back")
     parser.add_argument("--date", help="Specific date for report (YYYY-MM-DD)")
@@ -657,26 +661,15 @@ def main(argv: list[str] | None = None) -> int:
                           "model": os.getenv("SUMMARIZER_MODEL"),
                           "base_url": os.getenv("SUMMARIZER_API_URL")}
                          if args.enable_ai_summary else None)
-
-    if summarizer_config is not None and any(
-        not value or not value.strip() for value in summarizer_config.values()
-    ):
-        parser.error("AI summaries require SUMMARIZER_API_KEY, SUMMARIZER_MODEL and SUMMARIZER_API_URL")
+    if summarizer_config is not None and "SUMMARIZER_PROVIDER" in os.environ:
+        summarizer_config["provider"] = os.environ["SUMMARIZER_PROVIDER"]
 
     if summarizer_config is not None:
-        endpoint = summarizer_config["base_url"]
         try:
-            parsed = urlsplit(endpoint)
-            safe_scheme = parsed.scheme == "https" or (
-                parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            )
-            if (not safe_scheme or not parsed.hostname or parsed.username is not None
-                    or parsed.password is not None or parsed.query or parsed.fragment
-                    or any(char.isspace() or ord(char) < 32 for char in endpoint)
-                    or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
-                raise ValueError
-        except ValueError:
-            parser.error("SUMMARIZER_API_URL must be HTTPS (or loopback HTTP), without credentials, query or fragment")
+            validate_config(summarizer_config, require_explicit=True)
+        except ValueError as error:
+            # Validator messages contain setting names only, never private values.
+            parser.error(str(error))
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
@@ -807,6 +800,18 @@ def main(argv: list[str] | None = None) -> int:
             "discord": result.discord.confirmation,
         }, sort_keys=True))
         return 0 if result.success else 1
+
+    elif args.action == "daily":
+        # Run the new daily intel scan path with explicit public-dir
+        from intel_sources.daily_automation import run_daily
+        result = asyncio.run(run_daily(settings_path=None, data_dir=args.data_dir, public_dir=args.public_dir))
+        print(f"daily ok report_date={result['report_date']} public={result['public_path']} selected={result['counts'].get('selected',0)}")
+        return 0
+
+    elif args.action == "dashboard":
+        # Minimal dashboard placeholder; real implementation is deferred but route must exist
+        print("dashboard route registered")
+        return 0
 
 
 if __name__ == "__main__":

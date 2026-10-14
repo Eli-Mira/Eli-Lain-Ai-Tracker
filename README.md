@@ -1,12 +1,17 @@
 # Eli Lain — AI/Tech News Tracker
 
-> Automated digest of AI/tech news, pushed to Discord, Telegram, WhatsApp, and email via GitHub Actions.
+> Public AI/tool dashboard: [Open Eli Lain Intel](https://eli-lain-intel.pages.dev/). Ordinary public Telegram/Discord notifications share this hosted page, not a required HTML download.
+>
+> Hosted release acceptance is separate from local implementation; publishing remains opt-in.
+>
+> **Licence:** the MIT Licence covers source code only, not third-party artwork. See
+> [`THIRD-PARTY-NOTICE.md`](THIRD-PARTY-NOTICE.md) before forking or redistributing.
 
 AI/Tech News Tracker — pulls latest developments from GitHub, Reddit, Hacker News, arXiv, and tech news sites.
 
 ## How It Runs
 
-- **GitHub Actions** triggers the workflow daily at 11 AM Cairo time
+- **GitHub Actions** triggers the workflow daily at 09:00 Cairo time (06:00 UTC)
 - Fetches from GitHub releases, Reddit RSS, and tech news sources
 - Scores, summarizes, deduplicates
 - Generates an HTML report with the "lain" theme
@@ -60,9 +65,40 @@ python main.py report --theme lain
 
 ## Output
 
-- Daily JSON batches in `data/news_YYYYMMDD.json`
-- HTML reports in `reports/news_YYYYMMDD.html`
-- Deduplicated, filtered, and summarized items
+- Routine internal HTML replaces `reports/latest.html`; sanitized public HTML replaces `public/index.html`.
+- Current deduplicated discovery state and bounded first-seen/fingerprint metadata live in `data/intel_state.json`; the working news SQLite database and cooldowns are preserved.
+- Public notifications are hosted-link-first by default. An HTML attachment is secondary and explicit (`PUBLIC_REPORT_ATTACHMENT=true` or `scripts/publish_report.py --attach-html`).
+- Restart/partial-failure receipts are mode-bound and capped; no exactly-once guarantee or automatic send retry.
+- Existing archives are not deleted. `python scripts/cleanup_local_outputs.py --dry-run --json` lists exact candidates/exclusions for separate approval.
+
+See [link-first delivery](docs/link-first-delivery.md) and [local retention](docs/local-retention.md) for settings, bounds, safety limits and integration contracts.
+
+## Portable Settings Fallback (Daily Sources)
+
+The system includes built-in portable defaults for the four daily-source adapters, used automatically when no `config/sources.json` is present or valid:
+
+| Source ID | Name | Adapter | Endpoint |
+|-----------|------|---------|----------|
+| `openrouter-models` | OpenRouter Models | catalog | `https://openrouter.ai/api/v1/models` |
+| `github-trending` | GitHub Trending | github | `https://github.com/trending?since=daily` |
+| `skills-hot` | Skills Hot | skills | `https://skills.sh/trending` |
+| `unorouter-pricing` | UnoRouter Pricing | catalog | `https://api.unorouter.com/api/pricing/catalog` |
+
+**Fallback behavior:**
+
+The validator and the loader have separate contracts. Portable built-in defaults live only in the loader; the validator is schema-only.
+
+- `validate_settings({})` returns `sources: []` whenever `sources` is absent from the input dict (schema-only semantics). It never supplies the four portable defaults.
+- `default_settings(config_dir=None)`: auto-discovers `<project>/config/sources.json`, or loads the explicit `config_dir` passed in. A missing directory, missing file, malformed JSON, schema-invalid object, invalid root type, or invalid source entry all fall back to the four portable defaults with the unchanged default non-source policy. A valid file **overrides** the portable defaults exactly:
+  - Bare/legacy list of source objects — preserved verbatim; the four built-ins are **not** appended.
+  - Explicit `{"sources": []}` — disables all daily sources.
+  - All-disabled list — preserved exactly.
+  - Full object policy (all fields) — preserved exactly, not merged.
+  - Partial object without `sources` — `sources: []` plus the provided fields (`topics`, `max_items`, ...) and the original remaining defaults.
+- `load_settings(None)`, a missing file, or unreadable/malformed JSON **delegates to `default_settings()`**, which auto-discovers `<project>/config/sources.json`. A valid discovered configuration **wins**; otherwise the portable four-source defaults and the unchanged default non-source policy apply. A file that is syntactically valid but schema-invalid (wrong `schema_version`, bad `sources` shape, out-of-bounds values, unknown keys, invalid timezone) **raises** `ValueError` — schema validation is never silently bypassed.
+- Bare/legacy source lists (including `[]` and all-disabled lists) are accepted only by `default_settings()` when reading `sources.json`. A successfully parsed file passed directly to `load_settings()` must contain a full/partial object policy; a bare list raises `ValueError`. For object policies, provided fields win, missing non-source fields receive schema defaults, and absent `sources` validates to `[]`; only the loader's fallback supplies the four portable sources.
+- Each call to `default_settings()` returns fresh copies — no shared mutable state; mutating one result does not affect another.
+- Broader catalog/provider/local-FreeLLMAPI/news/discovery systems are separate and not covered by these four daily adapters
 
 ## Secrets
 

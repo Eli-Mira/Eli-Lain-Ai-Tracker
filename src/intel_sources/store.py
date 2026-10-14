@@ -1,12 +1,22 @@
 """Persist discovery baselines without mistaking observation for a launch."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+MAX_UNOBSERVED_PER_SOURCE = 1024
+MAX_IDENTITY_HISTORY = 64
+
+
+def _fingerprint(row: dict) -> str:
+    encoded = json.dumps(row.get("fingerprint_data"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -39,6 +49,17 @@ class IntelStore:
                 raise ValueError('Invalid intel item structure')
         if any(not isinstance(row, dict) or not isinstance(row.get('name'), str) or not row['name'] for row in state['sources']):
             raise ValueError('Invalid intel source structure')
+        history = state.get('identity_history', [])
+        if not isinstance(history, list) or len(history) > MAX_IDENTITY_HISTORY:
+            raise ValueError('Invalid intel identity history')
+        identifiers = set()
+        for row in history:
+            if (not isinstance(row, dict) or set(row) != {'id', 'source', 'first_seen', 'fingerprint_sha256'}
+                    or any(not isinstance(row.get(key), str) or not 0 < len(row[key]) <= 2048 for key in row)
+                    or not re.fullmatch(r'[a-f0-9]{64}', row['fingerprint_sha256'])
+                    or parse_time(row['first_seen']) is None or row['id'] in identifiers):
+                raise ValueError('Invalid intel identity history')
+            identifiers.add(row['id'])
 
     def read(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
@@ -59,6 +80,7 @@ class IntelStore:
         previous = self.read(now=now)
         initialized = bool(previous.get('initialized', False))
         old_rows = {r['id']: r for r in previous['items']}
+        history = {r['id']: r for r in previous.get('identity_history', [])}
         rows, changes = [], []
         by_source = {s['name']: s for s in sources}
         incoming = {}
@@ -73,19 +95,51 @@ class IntelStore:
         for item in incoming.values():
             row = dict(item)
             old = old_rows.get(row['id'])
-            row['first_seen'] = old.get('first_seen', now.isoformat()) if old else now.isoformat()
+            identity = old or history.get(row['id'])
+            row['first_seen'] = identity.get('first_seen', now.isoformat()) if identity else now.isoformat()
             row['checked_at'] = by_source.get(row['source'], {}).get('checked_at')
-            if initialized and (old is None or old.get('fingerprint_data') != row.get('fingerprint_data')):
-                change_type = 'newly_observed' if old is None else 'updated'
+            changed = (old.get('fingerprint_data') != row.get('fingerprint_data') if old else
+                       identity.get('fingerprint_sha256') != _fingerprint(row) if identity else True)
+            if initialized and changed:
+                change_type = 'newly_observed' if identity is None else 'updated'
                 changes.append({**row, 'change_type': change_type})
             rows.append(row)
         seen = {r['id'] for r in rows}
+        observed_sources = {row['source'] for row in incoming.values()}
+        unobserved_counts: dict[str, int] = {}
+        omitted = 0
         for identifier, old in old_rows.items():
             if identifier not in seen:
+                # Only an explicit, nonempty successful snapshot replaces its
+                # obsolete inventory. Failure/partial/absent/empty sources are
+                # not evidence that previously observed rows disappeared.
+                if old['source'] in observed_sources and by_source.get(old['source'], {}).get('status') == 'ok':
+                    continue
+                source = old['source']
+                # Bound only historical siblings of a newly observed partial
+                # snapshot. A wholly failed/absent/empty fetch cannot discard
+                # the last good current inventory. Incoming rows are never capped.
+                if source in observed_sources:
+                    count = unobserved_counts.get(source, 0)
+                    if count >= MAX_UNOBSERVED_PER_SOURCE:
+                        omitted += 1
+                        continue
+                    unobserved_counts[source] = count + 1
                 cached = dict(old)
                 cached['not_observed_in_latest_fetch'] = True
                 rows.append(cached)
         state = {'items': rows, 'changes': changes, 'sources': sources, 'baseline': not initialized, 'initialized': initialized or bool(items)}
+        retained = {row['id'] for row in rows}
+        # Removed full rows become compact identity metadata, never raw snapshots.
+        # The finite recent-identity horizon cannot establish all-time novelty.
+        for identifier, old in old_rows.items():
+            if identifier not in retained:
+                history.pop(identifier, None)
+                history[identifier] = {'id': identifier, 'source': old['source'],
+                    'first_seen': old.get('first_seen', now.isoformat()), 'fingerprint_sha256': _fingerprint(old)}
+        state['identity_history'] = [entry for identifier, entry in history.items() if identifier not in retained][-MAX_IDENTITY_HISTORY:]
+        state['retention'] = {'unobserved_limit_per_source': MAX_UNOBSERVED_PER_SOURCE,
+                              'omitted_unobserved': omitted, 'identity_history_limit': MAX_IDENTITY_HISTORY}
         self._validate_state(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = None

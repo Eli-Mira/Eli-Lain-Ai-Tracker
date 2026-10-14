@@ -74,6 +74,7 @@ class HTMLReporter:
         persona_image_url: str | None = None,
         *,
         news_saved_total: int | None = None,
+        inventory_total: int | None = None,
         change_items: list[dict[str, Any]] | None = None,
         baseline: bool = False,
         action_items: list[dict[str, Any]] | None = None,
@@ -104,12 +105,16 @@ class HTMLReporter:
                 raise
             template = self.env.get_template("report_template.html")
         
+        from .branding import avatar_data_uri, AVATAR_ALT
         return template.render(
+            branding_avatar=avatar_data_uri() if self.theme == 'lain' and (public_export or not _safe_http_url(persona_image_url)) else None,
+            branding_avatar_alt=AVATAR_ALT,
             report_date=report_date,
             generated_at=generated_at,
             api_items=api_items,
             news_items=news_items,
             news_saved_total=news_saved_total,
+            inventory_total=inventory_total,
             tool_items=tool_items,
             persona_image_url=persona_image_url,
             news_health_items=[] if public_export else project_news_health(news_health_items),
@@ -118,8 +123,8 @@ class HTMLReporter:
             action_items=action_items or [],
             source_items=source_items or [],
             runtime_source=runtime_source,
-            recommendation_groups=recommendation_groups or {},
-            recommendation_coverage=recommendation_coverage or {},
+            recommendation_groups={} if public_export else (recommendation_groups or {}),
+            recommendation_coverage={} if public_export else (recommendation_coverage or {}),
             public_export=public_export,
         )
     
@@ -134,6 +139,7 @@ class HTMLReporter:
         persona_image_url: str | None = None,
         *,
         news_saved_total: int | None = None,
+        inventory_total: int | None = None,
         change_items: list[dict[str, Any]] | None = None,
         baseline: bool = False,
         action_items: list[dict[str, Any]] | None = None,
@@ -148,6 +154,7 @@ class HTMLReporter:
             api_items=api_items,
             news_items=news_items,
             news_saved_total=news_saved_total,
+            inventory_total=inventory_total,
             tool_items=tool_items,
             report_date=report_date,
             generated_at=generated_at,
@@ -158,8 +165,8 @@ class HTMLReporter:
             action_items=action_items or [],
             source_items=source_items or [],
             runtime_source=runtime_source,
-            recommendation_groups=recommendation_groups or {},
-            recommendation_coverage=recommendation_coverage or {},
+            recommendation_groups={} if public_export else (recommendation_groups or {}),
+            recommendation_coverage={} if public_export else (recommendation_coverage or {}),
             public_export=public_export,
         )
         output_path = Path(output_path)

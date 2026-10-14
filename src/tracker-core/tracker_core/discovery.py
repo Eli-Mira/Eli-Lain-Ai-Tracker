@@ -210,3 +210,117 @@ def run_discovery(
         engine.save_candidates(output_path)
 
     return candidates
+
+# --- Search Saturation Tracking ---
+
+def _track_saturation(self, new_candidates: list[dict], previous_count: int | None = None) -> dict[str, any]:
+    """Track search saturation metrics after a discovery round.
+
+    Returns a dict with saturation metrics for the final report.
+    """
+    from collections import Counter
+
+    metrics: dict[str, any] = {
+        'new_unique_high_quality': 0,
+        'new_domains': 0,
+        'ranking_stability': 'UNKNOWN',
+        'top_k_changes': 0,
+        'feature_coverage_improvement': 0.0,
+        'source_diversity': 0,
+        'confidence_improvement': 0.0,
+        'meaningful_evidence_new': 0,
+        'score_changes': 0,
+        'new_providers': 0,
+        'top5_material_change': False,
+    }
+
+    if not previous_count and not hasattr(self, '_saturation_history'):
+        metrics['status'] = 'initial'
+        return metrics
+
+    if previous_count is None:
+        previous_count = getattr(self, '_last_candidate_count', 0)
+
+    current_count = len(new_candidates) if new_candidates else 0
+    new_count = current_count - previous_count if previous_count else 0
+
+    if new_count > 0:
+        metrics['new_unique_high_quality'] = sum(1 for c in new_candidates if c.get('score', 0) >= 70)
+        metrics['new_domains'] = len(set(c.get('source_id', '') for c in new_candidates))
+        metrics['source_diversity'] = len(set(c.get('source_id', '') for c in new_candidates))
+
+    metrics['meaningful_evidence_new'] = sum(1 for c in new_candidates if c.get('evidence_url'))
+    metrics['score_changes'] = new_count
+
+    # Track new providers contributing unique results
+    if hasattr(self, '_saturation_history'):
+        for prev in self._saturation_history:
+            all_providers.update(prev.get('providers', []))
+    current_providers = set()
+    for c in new_candidates:
+        current_providers.add(c.get('source_id', ''))
+    new_provider_set = current_providers - all_providers
+    metrics['new_providers'] = len(new_provider_set)
+
+    # Update history
+    if not hasattr(self, '_saturation_history'):
+        self._saturation_history = []
+    self._saturation_history.append({
+        'candidate_count': current_count,
+        'providers': list(current_providers),
+        'new_high_quality': metrics['new_unique_high_quality'],
+    })
+    self._saturation_history = self._saturation_history[-5:]
+
+    # Ranking stability
+    if hasattr(self, '_last_top_candidates') and previous_count is not None:
+        last_top = set(self._last_top_candidates)
+        curr_top = set(c.get('name', '')[:50] for c in new_candidates[:5])
+        if last_top or curr_top:
+            intersection = len(last_top & curr_top)
+            metrics['top_k_changes'] = 5 - intersection if last_top and curr_top else 0
+            metrics['ranking_stability'] = 'HIGH' if metrics['top_k_changes'] <= 1 else 'MODERATE' if metrics['top_k_changes'] <= 3 else 'LOW'
+
+    # Confidence improvement
+    if current_count > 0:
+        metrics['confidence_improvement'] = metrics['new_unique_high_quality'] / current_count
+    else:
+        metrics['confidence_improvement'] = 0.0
+
+    # Top-K material change
+    if previous_count is not None and new_count != previous_count:
+        metrics['top5_material_change'] = abs(new_count - previous_count) > 2
+
+    # Store current state for next round
+    self._last_candidate_count = current_count
+    self._last_top_candidates = [c.get('name', '')[:50] for c in new_candidates[:5]]
+
+    metrics['status'] = 'complete'
+    return metrics
+
+
+def _get_saturation_report(self) -> str:
+    """Generate a human-readable saturation report."""
+    if not hasattr(self, '_saturation_history') or not self._saturation_history:
+        return 'No saturation data — first run or not tracked.\n'
+
+    lines = [
+        'Search Saturation Report',
+        '=' * 25,
+        f'Total rounds tracked: {len(self._saturation_history)}',
+        '',
+    ]
+    for i, entry in enumerate(self._saturation_history):
+        lines.append(
+            f'Round {i+1}: {entry["candidate_count"]} candidates, '
+            f'{entry["new_high_quality"]} high-quality, '
+            f'providers: {" ".join(entry["providers"])}'
+        )
+    lines.extend([
+        '',
+        'Metrics: new_unique_high_quality, new_domains, source_diversity, ',
+        "       confidence_improvement, top_k_changes, top5_material_change",
+        f"       'status': '{self._saturation_history[-1].get('status', 'complete')}'",
+        '',
+    ])
+    return '\n'.join(lines)

@@ -52,7 +52,7 @@ async def test_production_run_survives_replacement_and_persists_winners(tmp_path
     assert result['total_fetched'] == 4
     assert result['dedup']['duplicate_count'] == 1
     assert result['inserted'] == 3
-    retained = tracker.sqlite.get_items(limit=100)
+    retained = tracker.sqlite.get_items(limit=100, days=0)
     assert {row['url'] for row in retained} == {str(row.url) for row in (y, z, w)}
     assert x.title not in {row['title'] for row in retained if row['url'] == str(x.url)}
 

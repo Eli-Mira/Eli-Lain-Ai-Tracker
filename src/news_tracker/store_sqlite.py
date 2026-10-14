@@ -291,19 +291,28 @@ class SQLiteStore:
         conn.commit()
 
     def load_source_health(self) -> dict[str, dict[str, Any]]:
-        """Load all source health records."""
+        """Load all source health records, skipping malformed entries."""
         conn = self._get_conn()
         rows = conn.execute("SELECT * FROM source_health").fetchall()
-        return {
-            row["name"]: {
-                "consecutive_failures": row["consecutive_failures"],
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            name = row["name"]
+            cf = row["consecutive_failures"]
+            ti = row["total_items"]
+            if not isinstance(cf, int) or isinstance(cf, bool) or cf < 0:
+                logger.warning(f"Skipping invalid health entry '{name}': consecutive_failures={cf!r}")
+                continue
+            if not isinstance(ti, int) or isinstance(ti, bool) or ti < 0:
+                logger.warning(f"Skipping invalid health entry '{name}': total_items={ti!r}")
+                continue
+            result[name] = {
+                "consecutive_failures": cf,
                 "last_success": row["last_success"],
                 "last_failure": row["last_failure"],
                 "is_disabled": bool(row["is_disabled"]),
-                "total_items": row["total_items"],
+                "total_items": ti,
             }
-            for row in rows
-        }
+        return result
 
     def close(self) -> None:
         """Close database connection."""

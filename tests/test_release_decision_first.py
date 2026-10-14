@@ -26,16 +26,15 @@ def public_payload(extra_rows=150):
 
 
 @pytest.mark.parametrize('public_export',[True,False])
-def test_shortlist_precedes_complete_inventory(public_export):
+def test_public_projection_has_no_personal_review_in_either_render_mode(public_export):
     payload=public_payload()
     soup=BeautifulSoup(LainReporter().render(**payload,public_export=public_export),'html.parser')
     order=[section.get('id') for section in soup.select('section.tracker')]
-    assert order.index('project-shortlists') < order.index('discoveries'), 'reviewed project fit is buried below the full catalog'
+    # Public projection no longer produces personal project recommendations (R09).
+    assert not soup.select('#project-shortlists')
     if public_export:
-        assert order[0]=='project-shortlists', 'the public consumer must start with the bounded decision view'
-    assert len(soup.select('#discoveries .discovery-item'))==len(payload['tool_items'])
-    assert all(row['data-id']==TDD for row in soup.select('#project-shortlists [data-decision=shortlist]'))
-    assert 'low' in soup.select_one('#project-shortlists').get_text()
+        assert order[0] == 'discoveries'
+    assert len(soup.select('#discoveries .discovery-item')) == len(payload['tool_items'])
 
 
 def test_public_inventory_is_explicit_native_disclosure_without_data_loss():
@@ -46,7 +45,7 @@ def test_public_inventory_is_explicit_native_disclosure_without_data_loss():
     assert not inventory.has_attr('open')
     assert inventory.find('summary',recursive=False) is not None
     assert 'Browse complete exported inventory' in inventory.find('summary', recursive=False).get_text()
-    assert f"{len(payload['tool_items'])} of {payload['recommendation_coverage']['inventory_count']} collected rows" in \
+    assert f"{len(payload['tool_items'])} of {payload['inventory_total']} collected rows" in \
         inventory.find('summary', recursive=False).get_text()
     assert 'not recommendations' in inventory.get_text()
     # Nothing in a public report may start expanded.
@@ -74,7 +73,7 @@ def test_public_inventory_is_explicit_native_disclosure_without_data_loss():
     assert 'Browse complete exported inventory' not in noscript
     assert inventory.find('summary',recursive=False).get_text(' ',strip=True).startswith('Browse ')
     assert len(inventory.select('.discovery-item'))==len(payload['tool_items'])
-    assert 'reviewed /' in soup.select_one('#recommendation-coverage').get_text()
+    assert soup.select_one('#recommendation-coverage') is None
 
 
 def capped_payload(cap):
@@ -91,7 +90,7 @@ def capped_payload(cap):
 def test_capped_export_never_claims_a_complete_catalog():
     payload = capped_payload(5)
     exported = len(payload['tool_items'])
-    total = payload['recommendation_coverage']['inventory_count']
+    total = payload['inventory_total']
     assert exported < total, 'fixture must actually be capped'
     soup = BeautifulSoup(LainReporter().render(**payload,public_export=True),'html.parser')
     summary = soup.select_one('details#discovery-inventory > summary').get_text(' ', strip=True)
@@ -118,11 +117,11 @@ def decision_browser():
 
 @pytest.mark.parametrize('javascript',[True,False])
 @pytest.mark.parametrize('width',[390,1440])
-def test_mobile_desktop_default_is_shortlist_and_inventory_opens_offline(tmp_path,javascript,width,decision_browser):
+def test_mobile_desktop_explore_first_and_inventory_opens_offline(tmp_path,javascript,width,decision_browser):
     payload=public_payload()
     path=tmp_path/'index.html'
     path.write_text(_standalone_html(LainReporter().render(**payload,public_export=True)),encoding='utf-8')
-    context=decision_browser.new_context(viewport={'width':width,'height':900},java_script_enabled=javascript,offline=True)
+    context=decision_browser.new_context(viewport={'width':width,'height':900},java_script_enabled=javascript,offline=True,color_scheme="dark")
     page=context.new_page()
     requests,errors=[],[]
     page.on('request',lambda request:requests.append(request.url))
@@ -130,11 +129,9 @@ def test_mobile_desktop_default_is_shortlist_and_inventory_opens_offline(tmp_pat
     try:
         page.goto(path.as_uri(),wait_until='load')
         assert page.locator('#discoveries .discovery-item:visible').count()==0, 'unreviewed catalog is exposed by default'
-        shortlist=page.locator('#project-shortlists')
-        assert shortlist.is_visible()
-        assert shortlist.bounding_box()['y'] < 500, 'the main decision section still requires deep scrolling'
-        assert page.locator('#project-shortlists [data-decision=shortlist]').first.bounding_box()['y'] < 900
-        assert page.locator('#project-shortlists [data-decision=shortlist]').count() <= 12
+        assert page.evaluate('scrollY') == 0
+        assert page.locator('#discoveries').bounding_box()['y'] < 300
+        assert page.locator('#project-shortlists').count() == 0
         inventory=page.locator('#discovery-inventory')
         summary=inventory.locator(':scope > summary')
         # Native keyboard activation must work even without scripting.

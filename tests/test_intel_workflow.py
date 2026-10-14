@@ -5,13 +5,24 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_scheduled_workflow_actually_runs_discovery_and_restores_history():
+def test_scheduled_workflow_runs_daily_and_restores_public_state():
+    """The workflow runs the daily producer (not legacy today/audit) and
+    restores only the approved public daily-state cache paths."""
     workflow = yaml.safe_load((ROOT / '.github/workflows/news-tracker-daily.yml').read_text(encoding='utf-8'))
     steps = workflow['jobs']['run-elilain-audit']['steps']
     commands = '\n'.join(s.get('run', '') for s in steps)
-    assert 'python main.py audit --theme lain' in commands
+    # Legacy today/audit steps were removed; only daily remains.
+    assert 'python main.py daily' in commands
+    assert 'python main.py today' not in commands
+    assert 'python main.py audit' not in commands
     cache_steps = [s for s in steps if s.get('uses', '').startswith(('actions/cache@', 'actions/cache/restore@'))]
-    assert any('data/intel_state.json' in s['with']['path'] for s in cache_steps)
+    cache_paths = '\n'.join(s['with']['path'] for s in cache_steps)
+    # Only daily public state is cached; private project/news DB state is gone.
+    assert 'data/daily_state/history.jsonl' in cache_paths
+    assert 'data/daily_state/raw_evidence.json' in cache_paths
+    assert 'data/intel_state.json' not in cache_paths
+    assert 'data/provider_state.json' not in cache_paths
+    assert 'data/news.db' not in cache_paths
     assert workflow['permissions']['contents'] == 'read'
 
 
@@ -24,8 +35,8 @@ def test_declared_dependencies_and_ci_prepare_browser_tests():
     commands = '\n'.join(s.get('run', '') for s in steps)
     assert 'python -m playwright install --with-deps chromium' in commands
     cache_paths = '\n'.join(s['with']['path'] for s in steps if s.get('uses', '').startswith(('actions/cache@', 'actions/cache/restore@')))
-    assert 'data/provider_state.json' in cache_paths
-    assert 'data/provider_changes.json' in cache_paths
+    # Daily-only cache paths remain; provider/news state was scoped out.
+    assert 'data/daily_state/history.jsonl' in cache_paths
     schedules = []
     for path in (ROOT/'.github/workflows').glob('*.yml'):
         data = yaml.safe_load(path.read_text(encoding='utf-8'))
@@ -63,15 +74,19 @@ def test_publish_step_is_gated_without_using_secrets_in_step_if():
 
 
 def test_public_export_step_runs_before_any_publish_or_upload():
-    workflow = yaml.safe_load((ROOT/'.github/workflows/news-tracker-daily.yml').read_text(encoding='utf-8'))
+    workflow = yaml.safe_load((ROOT / '.github/workflows/news-tracker-daily.yml').read_text(encoding='utf-8'))
     steps = workflow['jobs']['run-elilain-audit']['steps']
 
-    export_index = next(i for i, s in enumerate(steps) if 'main.py export-public' in s.get('run', ''))
+    # The legacy export-public step is removed; the daily step writes public/index.html directly.
+    assert not any('main.py export-public' in s.get('run', '') for s in steps), \
+        "legacy export-public step must be removed"
+    # The daily step runs before publish and uploads the real daily artifact.
+    daily_index = next(i for i, s in enumerate(steps) if 'main.py daily' in s.get('run', ''))
     publish_index = next(i for i, s in enumerate(steps) if 'main.py publish' in s.get('run', ''))
     public_upload = next(i for i, s in enumerate(steps)
                          if (s.get('with', {}).get('path') or '').strip() == 'public/index.html')
-    assert export_index < publish_index
-    assert export_index < public_upload
+    assert daily_index < publish_index
+    assert daily_index < public_upload
     assert steps[public_upload]['with']['name'].startswith('elain-public')
 
 
@@ -93,7 +108,8 @@ def test_workflow_references_no_deleted_email_secrets():
     assert not (env_names & removed), f"workflow still injects removed secrets: {env_names & removed}"
     assert 'secrets.EMAIL_' not in text
 
-    # The channel list comes from an encrypted secret, not the plaintext variable.
-    audit = next(s for s in steps if 'main.py audit' in s.get('run', ''))
-    assert audit['env']['NOTIFICATION_CHANNEL'] == '${{ secrets.NOTIFICATION_CHANNEL }}'
+    # The daily step sets NOTIFICATION_CHANNEL=none so notifications fire only
+    # through the publish step after host-byte verification.
+    daily = next(s for s in steps if 'main.py daily' in s.get('run', ''))
+    assert daily['env']['NOTIFICATION_CHANNEL'] == 'none'
     assert 'NOTIFICATION_CHANNEL' not in env_names - {'NOTIFICATION_CHANNEL'}

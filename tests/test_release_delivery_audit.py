@@ -20,10 +20,11 @@ from test_report_delivery import (  # reuse the realistic existing protocol fixt
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_release_delivers_the_standalone_html_file_to_both_channels(artifact_dir):
+def test_explicit_attachment_option_delivers_exact_file_to_both_channels(artifact_dir):
     data = (artifact_dir / "index.html").read_bytes()
     protocol = Protocol(data)
-    result = run(artifact_dir, protocol)
+    result = module().deliver_report(artifact_dir, environ={**ENV, "PUBLIC_REPORT_ATTACHMENT": "true"},
+        transport=httpx.MockTransport(protocol), resolver=lambda _: ["8.8.8.8"])
     documents = [r for r in protocol.calls if r.method == "POST"
                  and r.headers["host"] == "api.telegram.org" and r.url.path.endswith("/sendDocument")]
     uploads = [r for r in protocol.calls if r.method == "POST"
@@ -195,17 +196,26 @@ def test_release_restored_news_does_not_replay_breaking_notification(tmp_path, m
         tracker.sqlite.close()
 
 
-def test_release_workflow_restores_per_feed_health_state():
+def test_release_workflow_restores_daily_state_only():
+    """The workflow scopes cache to approved public daily data only.
+
+    Legacy today/audit touched private project evaluations, news DB, and
+    provider state — those were removed because the daily producer is the
+    sole publisher consumer. Private paths must no longer be cached.
+    """
     import yaml
     workflow = yaml.safe_load((ROOT / ".github/workflows/news-tracker-daily.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"]["run-elilain-audit"]["steps"]
     cache = next(s for s in steps if s.get("uses", "").startswith(("actions/cache@", "actions/cache/restore@")))
     cached = cache["with"]["path"].splitlines()
-    for required in ("data/feed_health.json", "data/health.json", "data/intel_state.json",
-                     "data/provider_state.json", "data/provider_changes.json",
-                     "data/project_evaluations.json", "data/delivery_receipts.json",
-                     "data/news.db"):
-        assert required in cached, f"{required} is not cached, so state silently resets each run"
+    # Approved public daily paths must be present.
+    for required in ("data/daily_state/history.jsonl", "data/daily_state/raw_evidence.json"):
+        assert required in cached, f"{required} is not cached"
+    # Private state paths must NOT be cached.
+    for forbidden in ("data/feed_health.json", "data/health.json", "data/intel_state.json",
+                      "data/provider_state.json", "data/provider_changes.json",
+                      "data/project_evaluations.json", "data/news.db"):
+        assert forbidden not in cached, f"{forbidden} must not be cached; scope is daily public only"
 
 
 def test_release_http_logging_flags_restore_after_exception(monkeypatch):

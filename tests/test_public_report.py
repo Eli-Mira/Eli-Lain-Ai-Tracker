@@ -52,12 +52,12 @@ def test_projection_only_emits_public_fields_not_private_operational_data():
     result = module.build_public_payload(state_fixture(), now=NOW, max_items_per_source=2)
     assert set(result) == {"api_items", "news_items", "tool_items", "source_items", "change_items",
                            "action_items", "report_date", "generated_at", "runtime_source",
-                           "persona_image_url", "baseline"}
+                           "persona_image_url", "baseline", "inventory_total"}
     assert result["api_items"] == result["news_items"] == result["change_items"] == result["action_items"] == []
     assert result["persona_image_url"] is None
     assert len(result["tool_items"]) == len(result["source_items"]) == 1
     item = result["tool_items"][0]
-    assert set(item) == {"id", "headline", "source", "url", "summary", "project_types", "freshness", "evidence"}
+    assert set(item) == {"id", "headline", "source", "url", "summary", "project_types", "freshness", "evidence", "popularity", "first_observed_at"}
     assert item["id"] == "openrouter:model:org/model"
     assert item["project_types"] == ["text", "tools"]
     assert item["evidence"] == [{"observed_at": OBSERVED, "first_observed_at": FIRST_SEEN}]
@@ -187,7 +187,9 @@ def test_export_reads_saved_inputs_without_mutation_and_writes_only_index(tmp_pa
     assert soup.select_one("header.report-head h1").text == "lain // tracker report"
     assert len(soup.select("#discoveries .discovery-item")) == 1
     assert len(soup.select("script")) == 1  # the existing safe local filter
-    assert not soup.select("script[src], link[rel=stylesheet], img, iframe, form")
+    assert not soup.select("script[src], link[rel=stylesheet], iframe, form")
+    from tracker_core.branding import avatar_data_uri
+    assert [image['src'] for image in soup.select('img')] == [avatar_data_uri()]
     assert "not a fresh fetch" in soup.footer.text
     assert OBSERVED in soup.text
     assert NOW.isoformat() in soup.footer.text
@@ -376,7 +378,7 @@ def test_real_chromium_public_html_is_offline_safe_responsive_and_filters_work(p
     state_path = tmp_path / "intel_state.json"
     state_path.write_text(json.dumps(state), encoding="utf-8")
     artifact = boundary().export_public_report(state_path, tmp_path / "missing.db", tmp_path / "public", now=NOW)
-    context = public_browser.new_context(viewport={"width": width, "height": 900}, offline=True)
+    context = public_browser.new_context(viewport={"width": width, "height": 900}, offline=True, color_scheme="dark")
     page = context.new_page()
     requests, errors, violations = [], [], []
     page.on("request", lambda request: requests.append(request.url))
@@ -392,7 +394,9 @@ def test_real_chromium_public_html_is_offline_safe_responsive_and_filters_work(p
         # Keep the exact expected value, but wait for that callback to complete.
         expect(page.locator('#discovery-result-count')).to_have_text("2 discoveries, no filter applied")
         assert page.evaluate("window.pwned || false") is False
-        assert page.locator("img, [onerror], iframe, script[src], link[rel=stylesheet]").count() == 0
+        assert page.locator("[onerror], iframe, script[src], link[rel=stylesheet]").count() == 0
+        assert page.locator('img').count() == 1
+        assert page.locator('img').get_attribute('src').startswith('data:image/jpeg;base64,')
         assert "PRIVATE_" not in page.locator("body").inner_text()
         assert OBSERVED in page.locator("body").inner_text()
         assert page.locator("body").evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(5, 7, 10)"
