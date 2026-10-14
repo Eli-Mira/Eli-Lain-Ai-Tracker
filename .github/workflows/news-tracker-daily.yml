@@ -25,6 +25,7 @@ on:
         required: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: elilain-release-e2e-${{ github.ref }}
   cancel-in-progress: false
@@ -64,6 +65,7 @@ jobs:
     - name: Restore daily public state only
       id: restore-intel
       uses: actions/cache/restore@v4
+      if: ${{ false }}
       with:
         key: intel-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: 'intel-state-${{ runner.os }}-
@@ -80,8 +82,6 @@ jobs:
           '
     - name: Install Chromium for rendered-site tests
       run: python -m playwright install --with-deps chromium
-    - name: Run regression tests
-      run: python -m pytest tests -q
     - name: Run daily intel scan
       id: daily-intel
       env:
@@ -101,6 +101,8 @@ jobs:
         path: public
         run-id: ${{ inputs.source_run_id }}
         github-token: ${{ github.token }}
+    - name: Run regression tests
+      run: python -m pytest tests -q
     - name: Validate sanitized single-file publication boundary
       run: python scripts/verify_pages_report.py --public-dir ./public --preflight-only
     - name: Upload sanitized public export as artifact
@@ -120,7 +122,7 @@ jobs:
         command: pages deploy ./public --project-name=eli-lain-intel --branch=main
     - name: Verify actual Pages bytes before notifications
       id: verify-pages
-      if: ${{ steps.deploy-pages.outcome == 'success' }}
+      if: ${{ steps.deploy-pages.outcome == 'success' || inputs.release_gate == 'notify' }}
       run: python scripts/verify_pages_report.py --public-dir ./public
     - name: Publish export and notify (opt-in via PUBLISH_ENABLED)
       if: ${{ vars.PUBLISH_ENABLED == 'true' && vars.CLOUDFLARE_PUBLISH_ENABLED == 'true' && inputs.publish_pages && inputs.release_gate == 'notify' }}
@@ -135,7 +137,7 @@ jobs:
         NOTIFICATION_CHANNEL: telegram,discord
       run: python main.py publish --public-dir ./public --no-export
     - name: Persist daily state only
-      if: ${{ always() && steps.restore-intel.outcome == 'success' }}
+      if: ${{ always() && false && steps.restore-intel.outcome == 'success' }}
       uses: actions/cache/save@v4
       with:
         key: intel-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
