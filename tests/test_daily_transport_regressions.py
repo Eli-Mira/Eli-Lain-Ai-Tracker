@@ -105,17 +105,45 @@ async def test_delayed_healthy_under_budget_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_delays_cumulatively_over_budget_fail():
-    """Delays individually below cap but cumulative over cap should fail."""
-    # Use larger delay to exceed remaining body budget after send
-    stream = DelayedStream([b"a", b"b", b"c", b"d"], chunk_delay=0.02)
+@pytest.mark.parametrize("redirect", [False, True])
+@pytest.mark.parametrize("body_seconds,rejected", [(4, True), (2, False)])
+async def test_send_and_body_share_one_total_deadline(monkeypatch, redirect, body_seconds, rejected):
+    """A total budget of 10 rejects send7 + body4, but accepts send7 + body2."""
+    loop = asyncio.get_running_loop()
+    origin = loop.time()
+    elapsed = 0
+
+    class ClockedStream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            nonlocal elapsed
+            elapsed += body_seconds
+            yield b"body"
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = ClockedStream()
+
     async def handler(request):
+        nonlocal elapsed
+        if redirect and request.url.path == "/start":
+            elapsed += 4
+            return httpx.Response(302, headers={"location": "/body"})
+        elapsed += 3 if redirect else 7
         return httpx.Response(200, stream=stream)
+
+    monkeypatch.setattr(loop, "time", lambda: origin + elapsed)
     async with mock_client(handler) as client:
-        # 4 chunks * 0.02s = 0.08s, but send consumes most of 0.1s budget
-        with pytest.raises((TimeoutError, ValueError, httpx.HTTPError)):
-            await ds._safe_get(client, "https://example.com/fixture", timeout=0.1)
-        assert stream.closed
+        if rejected:
+            with pytest.raises(TimeoutError):
+                await ds._safe_get(client, "https://example.com/start", timeout=10)
+        else:
+            response, _ = await ds._safe_get(client, "https://example.com/start", timeout=10)
+            assert response.content == b"body"
+    assert elapsed == 7 + body_seconds
+    assert stream.closed
 
 
 @pytest.mark.asyncio

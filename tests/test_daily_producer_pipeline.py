@@ -6,8 +6,10 @@ seam (_fetch_html / _fetch_json), never through a mocked successful application.
 """
 import asyncio
 import json
+import os
 import socket
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -324,6 +326,41 @@ async def test_actual_adapter_digest_export_and_consumer_keep_original_link(tmp_
     assert dict(artifact.source_counts) == {"github-trending": 1}
 
 
+def _normalize_windows_path(raw):
+    """Normalize MSYS bash-mangled Windows paths like ``\\c\\Users\\...``.
+
+    The bash shell mangles the leading drive letter into a backslash prefix;
+    revert that so pathlib/Path().is_file() resolves correctly.
+    """
+    import re as _re
+    m = _re.match(r"^\\([A-Za-z])\\(.*)$", raw)
+    return m.group(1).upper() + ":" + os.sep + m.group(2) if m else raw
+
+
+def _resolve_browser_executable(playwright):
+    """Return the Chromium executable path honoring PLAYWRIGHT_EXECUTABLE_PATH.
+
+    When the env var is set it is used verbatim and must exist on disk; a
+    missing or invalid path is surfaced as a launch failure, never a skip.
+    When it is unset, the managed Chromium bundled with the installed
+    Playwright package is used.
+    """
+    explicit = os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
+    if explicit:
+        path = Path(_normalize_windows_path(explicit))
+        if not path.is_file():
+            raise RuntimeError(
+                f"Chromium executable does not exist at {explicit!r}"
+            )
+        return str(path)
+    managed = _normalize_windows_path(playwright.chromium.executable_path)
+    if not Path(managed).is_file():
+        raise RuntimeError(
+            f"Managed Chromium executable does not exist at {managed!r}"
+        )
+    return managed
+
+
 @pytest.mark.parametrize("viewport", [{"width": 1440, "height": 1000}, {"width": 390, "height": 844}])
 @pytest.mark.parametrize("javascript_enabled", [True, False])
 def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javascript_enabled):
@@ -337,7 +374,8 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
         pytest.skip("requires parent-bound genuine generated daily artifact")
     errors, requests = [], []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(executable_path=os.environ["PLAYWRIGHT_EXECUTABLE_PATH"])
+        executable = _resolve_browser_executable(playwright)
+        browser = playwright.chromium.launch(executable_path=executable)
         try:
             context = browser.new_context(viewport=viewport, java_script_enabled=javascript_enabled)
             context.set_offline(True)
@@ -372,6 +410,38 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
             context.close()
         finally:
             browser.close()
+
+
+def test_browser_selector_explicit_path_must_exist(monkeypatch):
+    """An explicitly configured but missing browser must FAIL, not skip."""
+    from playwright.sync_api import sync_playwright
+
+    monkeypatch.setenv("PLAYWRIGHT_EXECUTABLE_PATH", "C:/nonexistent/missing-chrome.exe")
+    with sync_playwright() as playwright:
+        with pytest.raises(RuntimeError, match="does not exist"):
+            _resolve_browser_executable(playwright)
+
+
+def test_browser_selector_unset_uses_managed_chromium(monkeypatch, tmp_path):
+    """Selector unit test; real Chromium launches are covered above."""
+    from types import SimpleNamespace
+
+    managed = tmp_path / "managed-chrome.exe"
+    managed.touch()
+    playwright = SimpleNamespace(chromium=SimpleNamespace(executable_path=str(managed)))
+    monkeypatch.delenv("PLAYWRIGHT_EXECUTABLE_PATH", raising=False)
+    assert _resolve_browser_executable(playwright) == str(managed)
+
+
+def test_browser_selector_explicit_path_is_used_when_set(monkeypatch, tmp_path):
+    """A valid explicit path wins without requiring a managed installation."""
+    from types import SimpleNamespace
+
+    explicit = tmp_path / "configured-chrome.exe"
+    explicit.touch()
+    playwright = SimpleNamespace(chromium=SimpleNamespace(executable_path="missing-managed-chrome"))
+    monkeypatch.setenv("PLAYWRIGHT_EXECUTABLE_PATH", str(explicit))
+    assert _resolve_browser_executable(playwright) == str(explicit)
 
 
 

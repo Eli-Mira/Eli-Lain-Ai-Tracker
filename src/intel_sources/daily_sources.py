@@ -187,11 +187,17 @@ async def _safe_send_request(
     timeout: float = _MAX_SECONDS,
     max_bytes: int = _MAX_BYTES,
     extra_headers: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> httpx.Response:
     """Send a GET or HEAD request with SSRF-safe redirect following.
 
     Shared by _safe_get (GET) and _safe_head (HEAD).  DNS resolution and
     IP pinning are delegated to GuardedAsyncTransport.
+
+    ``deadline`` is an absolute monotonic deadline shared across send,
+    redirects and (for GET) body reading.  When omitted, a local deadline of
+    ``loop.time() + timeout`` is computed here, preserving the original
+    self-contained behavior for callers that own no outer budget (HEAD).
     """
     parsed = urlsplit(url)
 
@@ -217,10 +223,11 @@ async def _safe_send_request(
     if extra_headers:
         base_headers.update(extra_headers)
     request = client.build_request(method, url, timeout=timeout, headers=base_headers)
-    expiry = asyncio.get_event_loop().time() + timeout
+    if deadline is None:
+        deadline = asyncio.get_event_loop().time() + timeout
 
     while True:
-        remaining = expiry - asyncio.get_event_loop().time()
+        remaining = deadline - asyncio.get_event_loop().time()
         if remaining <= 0:
             raise TimeoutError(f"Request timed out for {url}")
         try:
@@ -238,7 +245,7 @@ async def _safe_send_request(
             visited.add(new_url)
             await response.aclose()
             request = client.build_request(method, new_url, timeout=timeout, headers=base_headers)
-            continue
+            continue  # deadline is shared across all hops
 
         break
 
@@ -263,11 +270,15 @@ async def _safe_get(
     - One total deadline covers DNS, connect, redirects, and body.
     DNS resolution and IP pinning are delegated to GuardedAsyncTransport.
     """
-    # Delegate redirect-following to shared _safe_send_request
-    response = await _safe_send_request(client, url, "GET", timeout=timeout, max_bytes=max_bytes, extra_headers=extra_headers)
-
-    # Set an expiry for body reading phase
-    expiry = asyncio.get_event_loop().time() + timeout
+    # Delegate redirect-following to shared _safe_send_request.
+    # One absolute deadline is created HERE and shared across send, redirects
+    # and body reading; _safe_send_request reuses it instead of granting a
+    # second independent timeout after headers arrive.
+    deadline = asyncio.get_event_loop().time() + timeout
+    response = await _safe_send_request(
+        client, url, "GET", timeout=timeout, max_bytes=max_bytes,
+        extra_headers=extra_headers, deadline=deadline,
+    )
 
     try:
         # Check WAF
@@ -353,7 +364,7 @@ async def _safe_get(
 
                 # Check deadline
                 elapsed = asyncio.get_event_loop().time() - body_start
-                if elapsed >= (expiry - body_start):
+                if elapsed >= (deadline - body_start):
                     raise TimeoutError(f"Body read timed out after {elapsed:.3f}s")
 
             # After stream ends, validate EOF and no trailing data (F-3, F-4, F-5)
@@ -366,7 +377,7 @@ async def _safe_get(
 
         try:
             # R2-E: No magic time buffer; remaining must be positive to start body read.
-            remaining_body = expiry - asyncio.get_event_loop().time()
+            remaining_body = deadline - asyncio.get_event_loop().time()
             if remaining_body <= 0:
                 raise TimeoutError("Body read exceeded total deadline")
             await asyncio.wait_for(read_body_chunks(), timeout=remaining_body)
