@@ -393,7 +393,15 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
                 assert page.locator("#daily-digest .empty").inner_text() == "No items selected for this digest."
             for zoom in ("100%", "200%"):
                 page.evaluate("zoom => document.body.style.zoom = zoom", zoom)
-                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), page.evaluate("({zoom:document.body.style.zoom, width:innerWidth, scrollWidth:document.documentElement.scrollWidth})")
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), page.evaluate("""() => ({
+                    zoom:document.body.style.zoom, width:innerWidth, scrollWidth:document.documentElement.scrollWidth,
+                    elements:Array.from(document.querySelectorAll('body *')).map(el => {
+                        const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                        return {tag:el.tagName,id:el.id,cls:el.className,right:r.right,width:r.width,
+                            scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,font:s.font,
+                            gridColumns:s.gridTemplateColumns,overflowWrap:s.overflowWrap};
+                    }).filter(r => r.right > innerWidth + 0.5 || r.scrollWidth > r.clientWidth + 1).slice(0,20)
+                })""")
             page.evaluate("document.body.style.zoom = '100%'")
             page.keyboard.press("Tab")
             assert page.locator(":focus").get_attribute("href") == "#daily-digest"
@@ -405,6 +413,59 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), page.evaluate("Array.from(document.querySelectorAll('body *')).filter(e => e.getBoundingClientRect().right > innerWidth + 1).slice(0, 12).map(e => ({tag:e.tagName,id:e.id,cls:e.className,width:e.getBoundingClientRect().width,right:e.getBoundingClientRect().right}))")
             else:
                 assert page.locator("noscript").is_visible()
+            assert not errors
+            assert requests and all(url.startswith(("file:", "data:")) for url in requests)
+            context.close()
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize("viewport", [{"width": 1440, "height": 1000}, {"width": 390, "height": 844}])
+@pytest.mark.parametrize("javascript_enabled", [True, False])
+def test_generated_digest_no_horizontal_overflow_at_200pct_zoom(tmp_path, viewport, javascript_enabled):
+    """Synthetic layout stress through the real sanitized export, not Jinja rewrites."""
+    from intel_sources.daily_public import export_digest
+    from playwright.sync_api import sync_playwright
+
+    timestamp = "2026-10-15T12:34:56.123456+00:00"
+    item = _gated_candidate()
+    item.update(name="Synthetic layout " + "longword" * 12,
+                why="Synthetic regression checks public card wrapping, not live source acceptance.",
+                score=60, observed_at=timestamp)
+    item["free"] = {"status": "unknown", "detail": ""}
+    item["api"] = {"status": "unknown", "detail": ""}
+    item["link_verification"]["checked_at"] = timestamp
+    artifact = export_digest({
+        "schema_version": 1, "report_date": "2026-10-15", "generated_at": timestamp,
+        "items": [item],
+        "sources": [{"id": "github-trending", "name": "GitHub Trending", "adapter": "html", "enabled": True}],
+        "history": [{"report_date": "2026-10-15", "generated_at": timestamp, "selected_count": 1}],
+        "counts": {"fetched": 1, "eligible": 1, "rejected": 0, "selected": 1},
+    }, tmp_path / "public")
+    errors, requests = [], []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(executable_path=_resolve_browser_executable(playwright))
+        try:
+            context = browser.new_context(viewport=viewport, java_script_enabled=javascript_enabled)
+            context.set_offline(True)
+            context.on("request", lambda request: requests.append(request.url))
+            page = context.new_page()
+            page.on("pageerror", lambda error: errors.append(error))
+            page.on("console", lambda message: errors.append(message.text) if message.type in {"error", "warning"} else None)
+            page.goto(artifact.as_uri())
+            assert page.locator("#daily-digest article").count() == 1
+            assert page.locator("#daily-digest .original-source").count() == 1
+            for zoom in ("100%", "200%"):
+                page.evaluate("zoom => document.body.style.zoom = zoom", zoom)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), page.evaluate("""() => ({
+                    zoom:document.body.style.zoom, width:innerWidth, scrollWidth:document.documentElement.scrollWidth,
+                    elements:Array.from(document.querySelectorAll('body *')).map(el => {
+                        const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                        return {tag:el.tagName,id:el.id,cls:el.className,right:r.right,width:r.width,
+                            scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,font:s.font,
+                            gridColumns:s.gridTemplateColumns,overflowWrap:s.overflowWrap};
+                    }).filter(r => r.right > innerWidth + 0.5 || r.scrollWidth > r.clientWidth + 1).slice(0,20)
+                })""")
             assert not errors
             assert requests and all(url.startswith(("file:", "data:")) for url in requests)
             context.close()

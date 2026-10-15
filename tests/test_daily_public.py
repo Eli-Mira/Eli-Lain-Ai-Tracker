@@ -66,6 +66,19 @@ def test_export_digest_atomic_write(tmp_path: Path):
     assert out == out2
 
 
+def test_export_preserves_skip_link_to_existing_main(tmp_path: Path):
+    from bs4 import BeautifulSoup
+
+    output = export_digest(minimal_digest(), tmp_path / "public")
+    soup = BeautifulSoup(output.read_text(encoding="utf-8"), "html.parser")
+    skip = soup.select_one('a.skip[href="#main"]')
+    assert skip is not None
+    assert skip.get_text(strip=True) == "Skip to content"
+    assert soup.select_one("main#main") is not None
+    assert soup.select("a[href], button, input, select, textarea, summary")[0] is skip
+    assert "connect-src 'none'" in soup.select_one('meta[http-equiv="Content-Security-Policy"]')["content"]
+
+
 def test_validate_digest_rejects_secrets_in_what():
     d = minimal_digest()
     d["entries"][0]["what"] = "secret sk-abcdefg1234567890 found here"

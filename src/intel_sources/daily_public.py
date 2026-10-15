@@ -119,8 +119,6 @@ def export_digest(digest: dict[str, Any], export_dir: str | Path) -> Path:
     _validate_digest_for_public(digest)
 
     html_output = render_digest(digest)
-    # Strip skip-to-content anchor that targets #main (not in allowed anchors set)
-    html_output = re.sub(r'<a\s+href\s*=\s*"#main"[^>]*>.*?</a>', '', html_output, flags=re.IGNORECASE | re.DOTALL)
     html_output = _standalone_html(html_output)
 
     target = export_dir / 'index.html'

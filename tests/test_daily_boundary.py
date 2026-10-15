@@ -9,7 +9,7 @@ def document(anchor, exists=True):
             f'<a href="#{anchor}">Read</a>{section}</body></html>')
 
 
-@pytest.mark.parametrize('anchor', ['daily-digest', 'report-history'])
+@pytest.mark.parametrize('anchor', ['main', 'daily-digest', 'report-history'])
 def test_owned_daily_navigation_is_allowed_with_existing_target(anchor):
     output = _standalone_html(document(anchor))
     assert f'href="#{anchor}"' in output
@@ -17,7 +17,7 @@ def test_owned_daily_navigation_is_allowed_with_existing_target(anchor):
     assert "form-action 'none'" in output
 
 
-@pytest.mark.parametrize('anchor', ['daily-digest', 'report-history'])
+@pytest.mark.parametrize('anchor', ['main', 'daily-digest', 'report-history'])
 def test_owned_navigation_without_target_is_rejected(anchor):
     with pytest.raises(ValueError, match='unsafe link'):
         _standalone_html(document(anchor, exists=False))
