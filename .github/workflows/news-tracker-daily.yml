@@ -35,7 +35,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install -e "./src/tracker-core"
+          cd news-tracker
           pip install -e ".[dev]"
       
       - name: Run news tracker
@@ -55,11 +55,12 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NOTIFICATION_CHANNEL: ${{ secrets.NOTIFICATION_CHANNEL }}
         run: |
+          cd news-tracker
           python main.py today --theme lain
       
       - name: Upload report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: news-report-${{ github.run_id }}
-          path: reports/*.html
+          path: news-tracker/reports/*.html
           retention-days: 7
