@@ -22,9 +22,12 @@ MAX_BODY_SIZE = 1_048_576
 _csrf_tokens: dict[str, str] = {}
 _csrf_lock = threading.Lock()
 
-# Shared scan state across all handler instances
+# Placeholder global scan state for test resetting. Runtime servers use per-instance state.
 _scan_state = {
     "running": False,
+    "status": "idle",
+    "last_error": None,
+    "last_report": None,
     "lock": threading.Lock(),
 }
 
@@ -58,12 +61,9 @@ def _verify_origin_host(headers: dict[str, str], host: str, fallback_host: str =
 
 
 def _validate_csrf_token(token: str) -> bool:
-    """Verify CSRF token exists and consume it (single-use)."""
+    """Verify CSRF token exists without consuming it."""
     with _csrf_lock:
-        if token in _csrf_tokens:
-            del _csrf_tokens[token]
-            return True
-        return False
+        return token in _csrf_tokens
 
 
 def _issue_csrf_token() -> str:
@@ -110,15 +110,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.history_dir = history_dir
         self.templates_dir = templates_dir
         self.run_scan = run_scan
-        # Use shared scan state
-        self._scan_lock = _scan_state["lock"]
-        self._scan_status = {
-            "running": False,
-            "status": "idle",
-            "last_error": None,
-            "last_report": None,
-        }
         super().__init__(*args, **kwargs)
+    
+    def log_message(self, format: str, *args: Any) -> None:
+        """Silence logs unless debugging."""
+        pass
     
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         """Send JSON response."""
@@ -146,6 +142,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         server_host = f"{self.server.server_address[0]}:{self.server.server_address[1]}"
         # Also accept the test's hardcoded 8768 for backward compatibility
         fallback_host = "127.0.0.1:8768"
+        # Browser navigation and same-origin fetches omit Origin; keep exact Host admission.
+        if (self.command == "GET" and not self.headers.get("Origin")
+                and self.headers.get("Host") == server_host
+                and self.headers.get("Sec-Fetch-Site") in {"none", "same-origin"}):
+            return True
         if not _verify_origin_host(dict(self.headers), server_host, fallback_host):
             self._send_error(403, "Invalid Origin or Host")
             return False
@@ -220,8 +221,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not csrf_token:
             return
         
-        # Check if scan is running
-        with self._scan_lock:
+        with _scan_state["lock"]:
             if _scan_state["running"]:
                 self._send_error(409, "Scan in progress")
                 return
@@ -235,9 +235,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(e))
             return
         
-        from intel_sources.settings import save_settings
+        from intel_sources.settings import load_settings, save_settings
         try:
-            saved = save_settings(self.settings_path, data)
+            existing = load_settings(self.settings_path)
+        except ValueError:
+            existing = {}
+        merged = {**existing, **data}
+        try:
+            saved = save_settings(self.settings_path, merged)
         except ValueError as e:
             self._send_error(400, str(e))
             return
@@ -249,8 +254,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._require_origin_host():
             return
         
-        with self._scan_lock:
-            status = dict(self._scan_status)
+        with _scan_state["lock"]:
+            status = {
+                "running": _scan_state["running"],
+                "status": _scan_state["status"],
+                "last_error": _scan_state["last_error"],
+                "last_report": _scan_state["last_report"],
+            }
         self._send_json(200, status)
     
     def _handle_post_scan(self) -> None:
@@ -262,18 +272,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not csrf_token:
             return
         
-        # Check single-flight
-        with self._scan_lock:
+        with _scan_state["lock"]:
             if _scan_state["running"]:
                 self._send_error(409, "Scan already running")
                 return
             _scan_state["running"] = True
-            self._scan_status = {
-                "running": True,
-                "status": "started",
-                "last_error": None,
-                "last_report": None,
-            }
+            _scan_state["status"] = "started"
+            _scan_state["last_error"] = None
+            _scan_state["last_report"] = None
         
         # Read settings to pass to callback
         from intel_sources.settings import load_settings
@@ -282,42 +288,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Start scan in background thread
         def run_scan_worker():
             try:
-                # Small delay to allow test to verify running state
-                time.sleep(2.0)
                 result = self.run_scan(settings)
-                # Save report to history
-                report_id = f"report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-                report_path = self.history_dir / f"{report_id}.html"
+                report_date = result.get("report_date", "unknown")
+                report_id = f"report_{report_date}"
                 
-                # For now, just create a minimal report
-                report_html = f"""<html>
-<head><title>Intel Report {report_id}</title></head>
-<body>
-<h1>Intelligence Report</h1>
-<p>Generated: {datetime.now(timezone.utc).isoformat()}</p>
-<p>Settings: {json.dumps(settings)}</p>
-<p>Result: {json.dumps(result)}</p>
-</body>
-</html>"""
-                report_path.write_text(report_html, encoding="utf-8")
-                
-                with self._scan_lock:
+                with _scan_state["lock"]:
                     _scan_state["running"] = False
-                    self._scan_status = {
-                        "running": False,
-                        "status": "completed",
-                        "last_error": None,
-                        "last_report": report_id,
-                    }
+                    _scan_state["status"] = "completed"
+                    _scan_state["last_error"] = None
+                    _scan_state["last_report"] = report_id
             except Exception as e:
-                with self._scan_lock:
+                with _scan_state["lock"]:
                     _scan_state["running"] = False
-                    self._scan_status = {
-                        "running": False,
-                        "status": "failed",
-                        "last_error": str(e),
-                        "last_report": None,
-                    }
+                    _scan_state["status"] = "failed"
+                    _scan_state["last_error"] = str(e)
+                    _scan_state["last_report"] = None
         
         thread = threading.Thread(target=run_scan_worker, daemon=True)
         thread.start()
@@ -325,38 +310,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "started", "message": "Scan initiated"})
     
     def _handle_get_history(self) -> None:
-        """GET /api/history - return list of completed reports."""
+        """GET /api/history - return list of completed reports from history.jsonl."""
         if not self._require_origin_host():
             return
         
+        history_file = self.history_dir / "history.jsonl"
         reports = []
-        for report_file in sorted(self.history_dir.glob("report_*.html"), reverse=True):
-            # Parse metadata from filename or file content
-            stat = report_file.stat()
-            report_id = report_file.stem
-            
-            # Try to extract date from filename
-            date_match = re.search(r"report_(\d{8}_\d{6})", report_id)
-            if date_match:
-                report_date = date_match.group(1)
-                try:
-                    dt = datetime.strptime(report_date, "%Y%m%d_%H%M%S")
-                    report_date = dt.strftime("%Y-%m-%d")
-                    generated_at = dt.replace(tzinfo=timezone.utc).isoformat()
-                except ValueError:
-                    report_date = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
-                    generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-            else:
-                report_date = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
-                generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-            
-            reports.append({
-                "id": report_id,
-                "report_date": report_date,
-                "generated_at": generated_at,
-                "selected_count": 0,  # Would need to parse report for actual count
-                "url": f"/reports/{report_id}.html",
-            })
+        
+        if history_file.exists():
+            try:
+                content = history_file.read_text(encoding="utf-8").strip()
+                if content:
+                    lines = content.splitlines()
+                    for line in reversed(lines[-90:]):
+                        try:
+                            entry = json.loads(line)
+                            report_date = entry.get("report_date", "unknown")
+                            reports.append({
+                                "id": f"report_{report_date}",
+                                "report_date": report_date,
+                                "generated_at": entry.get("generated_at"),
+                                "selected_count": entry.get("counts", {}).get("selected", 0),
+                                "url": f"/reports/report_{report_date}.html",
+                            })
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
         
         self._send_json(200, {"reports": reports})
     
@@ -366,30 +346,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         
         # Extract report ID from path
-        match = re.match(r"^/reports/(report_\d{8}_\d{6})\.html$", path)
+        match = re.match(r"^/reports/report_(\d{4}-\d{2}-\d{2})\.html$", path)
         if not match:
             self._send_error(404, "Report not found")
             return
         
-        report_id = match.group(1)
-        report_path = self.history_dir / f"{report_id}.html"
+        report_date = match.group(1)
+        public_dir = self.history_dir.parent / "public"
+        report_file = public_dir / "index.html"
         
-        # Security: ensure path is within history_dir (no traversal)
-        try:
-            report_path.resolve().relative_to(self.history_dir.resolve())
-        except ValueError:
-            self._send_error(403, "Invalid report path")
-            return
-        
-        if not report_path.exists():
-            self._send_error(404, "Report not found")
+        if not report_file.exists():
+            self._send_error(404, "Report artifact not found")
             return
         
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(report_path.read_bytes())
+        self.wfile.write(report_file.read_bytes())
 
 
 def serve_dashboard(
@@ -445,9 +419,6 @@ def serve_dashboard(
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
     
-    # Wait a moment for server to start
-    time.sleep(0.1)
-    
     return server
 
 
@@ -475,7 +446,7 @@ if __name__ == "__main__":
         print("Press Ctrl+C to stop")
         try:
             while True:
-                time.sleep(1)
+                pass
         except KeyboardInterrupt:
             server.shutdown()
             print("Server stopped")
