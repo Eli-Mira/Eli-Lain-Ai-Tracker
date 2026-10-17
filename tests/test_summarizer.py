@@ -66,10 +66,9 @@ class TestSummarizer:
         with patch('httpx.AsyncClient') as mock_client:
             mock_client.return_value.__aenter__.return_value.post.side_effect = Exception("API error")
             
-            result = await summarizer._call_llm("Test prompt")
-            
-            # Should return fallback
-            assert "error" in result.lower()
+            # Failure is not a successful AI response; the public wrapper supplies a labelled excerpt.
+            with pytest.raises(RuntimeError, match="AI summarization unavailable"):
+                await summarizer._call_llm("Test prompt")
 
 
 @pytest.mark.asyncio

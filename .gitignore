@@ -1,40 +1,46 @@
-# .gitignore for AI/Tech News Tracker
-# ====================================
-
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 dist/
 build/
+.eggs/
 *.egg
 
-# Virtual environments
-.venv/
+# Virtual envs
 venv/
 env/
+.venv/
+
+# Data
+data/
+reports/
+.cache/
+*.db
+*.json
+!reports/.gitkeep
+
+# Regenerated each run, never committed
+public/
+
+# ...but dated verification evidence and generated test fixtures are tracked
+!docs/
+!docs/*.json
+!tests/fixtures/
+!tests/fixtures/*.json
+
+# Env
 .env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
 
-# Project specific
-data/*.db
-data/*.json
-reports/*.html
-.cache/
-*.log
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Secrets
-.env
-*.pem
-*.key
+# Local CLI state
+a.local/
+.local/

@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
 class SourceType(str, Enum):
@@ -83,21 +83,20 @@ class Provider(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "Google AI Studio",
-                "base_url": "https://ai.google.dev/",
-                "docs_url": "https://ai.google.dev/docs",
-                "free_tier_available": True,
-                "free_tier_details": {
-                    "rate_limit": "60 requests per minute",
-                    "models": ["gemini-pro", "gemini-pro-vision"]
-                },
-                "status": "verified",
-                "region": "western"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "Google AI Studio",
+            "base_url": "https://ai.google.dev/",
+            "docs_url": "https://ai.google.dev/docs",
+            "free_tier_available": True,
+            "free_tier_details": {
+                "rate_limit": "60 requests per minute",
+                "models": ["gemini-pro", "gemini-pro-vision"]
+            },
+            "status": "verified",
+            "region": "western"
         }
+    })
 
 
 class ProviderList(BaseModel):
@@ -142,19 +141,18 @@ class NewsItem(BaseModel):
     # Sources that reported this story (for cross-verification)
     source_count: int = 1
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "source": "github",
-                "title": "OpenAI releases GPT-4o",
-                "url": "https://github.com/openai/openai-python/releases/tag/v1.0.0",
-                "published_date": "2024-05-13T00:00:00Z",
-                "category": "model_release",
-                "relevance_score": 0.95,
-                "is_relevant": True,
-                "summary": "OpenAI released GPT-4o, their new multimodal model."
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "source": "github",
+            "title": "OpenAI releases GPT-4o",
+            "url": "https://github.com/openai/openai-python/releases/tag/v1.0.0",
+            "published_date": "2024-05-13T00:00:00Z",
+            "category": "model_release",
+            "relevance_score": 0.95,
+            "is_relevant": True,
+            "summary": "OpenAI released GPT-4o, their new multimodal model."
         }
+    })
 
 
 class NewsBatch(BaseModel):
@@ -164,15 +162,14 @@ class NewsBatch(BaseModel):
     total_count: int = 0
     relevant_count: int = 0
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "date": "2024-05-13T00:00:00Z",
-                "items": [],
-                "total_count": 0,
-                "relevant_count": 0
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "date": "2024-05-13T00:00:00Z",
+            "items": [],
+            "total_count": 0,
+            "relevant_count": 0
         }
+    })
 
 
 # ---------------------------------------------------------------------------

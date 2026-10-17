@@ -102,16 +102,24 @@ class SQLiteStore:
 
         for item in items:
             try:
-                conn.execute("""
+                # NewsItem's legacy default is utcnow() (naive UTC); aware
+                # observations are normalized without replacing their age. A
+                # non-null tzinfo can still supply no offset, and astimezone()
+                # would then read the wall clock as machine-local time.
+                fetched = item.fetched_date
+                if fetched.tzinfo is None or fetched.utcoffset() is None:
+                    fetched = fetched.replace(tzinfo=timezone.utc)
+                cursor = conn.execute("""
                     INSERT OR IGNORE INTO news_items
-                    (source, title, url, published_date, category, summary,
+                    (source, title, url, published_date, fetched_date, category, summary,
                      relevance_score, is_relevant, source_count, raw_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     item.source.value if hasattr(item.source, "value") else str(item.source),
                     item.title,
                     str(item.url) if item.url else "",
                     item.published_date.isoformat() if item.published_date else None,
+                    fetched.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"),
                     item.category.value if item.category else None,
                     item.summary,
                     item.relevance_score,
@@ -119,14 +127,42 @@ class SQLiteStore:
                     item.source_count,
                     json.dumps(item.raw_data) if item.raw_data else None,
                 ))
-                if conn.total_changes > 0:
-                    inserted += 1
+                inserted += cursor.rowcount
+            except sqlite3.Error:
+                # Storage failures are not malformed individual observations.
+                # Never publish a partial batch as a successful completed run.
+                conn.rollback()
+                logger.warning("News storage failed; batch rolled back")
+                raise
             except Exception as e:
-                logger.warning(f"Failed to save item '{item.title}': {e}")
+                logger.warning("Failed to save news item (%s); valid siblings retained", type(e).__name__)
 
         conn.commit()
-        logger.info(f"Saved {inserted} new items to SQLite ({len(items)} total)")
+        # `len(items)` is the size of the batch handed to this call, not the
+        # number of rows the database retains. Labelling it "total" made a
+        # restored-cache replay read as a running total.
+        logger.info(f"Saved {inserted} new items to SQLite "
+                    f"({self.count_items(days=0)} retained)")
         return inserted
+
+    def existing_urls(self, items: list[NewsItem]) -> set[str]:
+        """URLs already stored, so a run can tell new observations from replays.
+
+        Restored CI cache replays yesterday's news; without this, the same
+        breaking item is re-sent on every run as if it were fresh.
+        """
+        urls = [str(item.url) for item in items if getattr(item, "url", None)]
+        if not urls:
+            return set()
+        conn = self._get_conn()
+        known: set[str] = set()
+        for start in range(0, len(urls), 400):  # stay under SQLite's variable limit
+            chunk = urls[start:start + 400]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT url FROM news_items WHERE url IN ({placeholders})", chunk).fetchall()
+            known.update(row[0] for row in rows)
+        return known
 
     def get_items(
         self,
@@ -144,7 +180,7 @@ class SQLiteStore:
 
         if days:
             cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
-            query += " AND fetched_date >= datetime(?, 'unixepoch')"
+            query += " AND julianday(fetched_date) BETWEEN julianday(?, 'unixepoch') AND julianday('now')"
             params.append(cutoff)
 
         if category:
@@ -165,6 +201,21 @@ class SQLiteStore:
         rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def count_items(self, days: int = 7) -> int:
+        """Total items retained in the window, independent of any list limit.
+
+        Lets a report disclose what a list cap would otherwise hide.
+        """
+        conn = self._get_conn()
+        if days:
+            cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM news_items WHERE julianday(fetched_date) BETWEEN julianday(?, 'unixepoch') AND julianday('now')",
+                (cutoff,)).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM news_items").fetchone()
+        return int(row[0])
+
     def get_weekly_summary(self, weeks: int = 1) -> dict[str, Any]:
         """Get most-covered topics for the past N weeks."""
         conn = self._get_conn()
@@ -173,7 +224,7 @@ class SQLiteStore:
         rows = conn.execute("""
             SELECT category, COUNT(*) as count
             FROM news_items
-            WHERE fetched_date >= datetime('now', ?)
+            WHERE julianday(fetched_date) BETWEEN julianday('now', ?) AND julianday('now')
             GROUP BY category
             ORDER BY count DESC
         """, (f"-{weeks * 7} days",)).fetchall()
@@ -184,7 +235,7 @@ class SQLiteStore:
         rows = conn.execute("""
             SELECT source, COUNT(*) as count
             FROM news_items
-            WHERE fetched_date >= datetime('now', ?)
+            WHERE julianday(fetched_date) BETWEEN julianday('now', ?) AND julianday('now')
             GROUP BY source
             ORDER BY count DESC
         """, (f"-{weeks * 7} days",)).fetchall()
@@ -194,7 +245,7 @@ class SQLiteStore:
         # Total items
         row = conn.execute("""
             SELECT COUNT(*) as total FROM news_items
-            WHERE fetched_date >= datetime('now', ?)
+            WHERE julianday(fetched_date) BETWEEN julianday('now', ?) AND julianday('now')
         """, (f"-{weeks * 7} days",)).fetchone()
 
         return {

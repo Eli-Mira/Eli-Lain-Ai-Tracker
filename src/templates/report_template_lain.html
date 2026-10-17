@@ -1,4 +1,4 @@
-<!--
+{% raw %}<!--
   REPORT TEMPLATE — "lain" theme — read before editing
   ============================================================================
   Same data contract and edit rules as report_template.html:
@@ -17,6 +17,34 @@
                                         placeholder instead of a broken image.
   ============================================================================
 -->
+{% endraw %}
+<!--
+  INTEL EXTENSION CONTRACT (original locked style and header preserved above):
+    change_items: headline, source, summary, url, change_type
+    action_items: title, priority, reason, action, url
+    source_items: name, status, checked_at, item_count, error, url, coverage
+    tool_items: headline, source, summary, url; optional id, project_types,
+                evidence (list of dictionaries), freshness, change_type
+    api_items: name, status, description; optional actual_status, freshness,
+               checked_at, probe_source, evidence (list of dictionaries)
+    baseline: true means the first run has no previous snapshot to compare
+    runtime_source: explicit runner label, otherwise runtime not supplied
+  Empty states remain visible; timestamps are not synthesized as probe evidence.
+  Extension styles live in a separate block. Only HTTP(S) URLs are clickable.
+-->
+{% macro safe_link(url, label) -%}
+{% set href = url|safe_url %}{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ label }}</a>{% else %}{{ label }}{% endif %}
+{%- endmacro %}
+{% macro evidence_details(items) -%}
+<details class="evidence">
+  <summary>Evidence ({{ items|length }})</summary>
+  <ul class="evidence-list">
+    {% for entry in items %}
+    <li>{% if entry is mapping %}{% for key, value in entry.items() %}<div><span class="item-source">{{ key }}:</span> {% if key == 'url' %}{{ safe_link(value, value) }}{% else %}{{ value }}{% endif %}</div>{% endfor %}{% else %}{{ entry }}{% endif %}</li>
+    {% else %}<li>No evidence supplied — unverified.</li>{% endfor %}
+  </ul>
+</details>
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -137,14 +165,32 @@
     header.report-head { align-items: flex-start; }
   }
 </style>
+<style id="intel-extensions">
+  /* Additive extension rules only; original locked style block is unchanged. */
+  .tracker p.meta { color: var(--text); }
+  .tracker .public-metadata { font-size: 13px; padding-left: 20px; margin: 6px 0; }
+  .tracker .item-line { flex-wrap: wrap; }
+  .tracker .item { overflow-wrap: anywhere; }
+  .tracker .evidence { font-size: 13px; margin-top: 6px; }
+  .tracker .evidence summary { cursor: pointer; color: var(--text); }
+  .tracker .inventory { margin-top: 8px; }
+  .tracker .inventory summary { cursor: pointer; color: var(--text); }
+  .tracker .inventory[data-pinned="true"] > summary { color: var(--cyan); }
+  .tracker .evidence-list { padding-left: 20px; }
+  .tracker .evidence a { color: var(--text); }
+  .discovery-filters { display: grid; gap: 6px; font-size: 13px; }
+  .discovery-filters input, .discovery-filters select { width: 100%; min-width: 0; font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 6px; }
+  .discovery-filters :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  .tracker [hidden] { display: none !important; }
+</style>
 </head>
 <body>
 <div class="wrap">
 
   <header class="report-head">
     <div class="portrait">
-      {% if persona_image_url %}
-      <img src="{{ persona_image_url }}" alt="lain">
+      {% if persona_image_url|safe_url %}
+      <img src="{{ persona_image_url|safe_url }}" alt="lain">
       {% endif %}
     </div>
     <div class="head-text">
@@ -153,10 +199,72 @@
     </div>
   </header>
 
-  <!-- ===== EDITABLE: content below driven entirely by api_items ===== -->
-  <section class="tracker">
+{% set change_digest %}
+  <!-- Extension: change-first digest; original inventory markup follows. -->
+  <section class="tracker changes" id="changes" aria-label="Changes since previous run">
+    <div class="section-head"><span class="cmd">$ changes-since-last-run</span></div>
+    {% if baseline %}<p class="meta">First run — baseline captured; no previous snapshot to compare.</p>{% endif %}
+    <ul class="items">
+      {% for item in change_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="status">[{{ item.change_type }}]</span></div>
+        <div class="item-desc">{{ item.summary }}</div>
+        <div class="item-source">{{ item.source }}</div>
+      </li>
+      {% else %}
+      <li class="item empty-state">{% if baseline %}Inventory below establishes the baseline.{% else %}No material changes detected since the previous run.{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+
+{% endset %}
+{% if not public_export and (change_items or baseline) %}{{ change_digest }}{% endif %}
+
+{% set project_shortlists_view %}
+  <!-- Additive advisory view; the broad discovery inventory remains below.
+       Omitted entirely when no evaluated review is supplied, so a discovery-free
+       report never claims an empty or unsupplied project review. -->
+  {% if recommendation_groups %}
+  <section class="tracker recommendations" id="project-shortlists" aria-label="Evaluated project shortlists">
+    <div class="section-head"><span class="cmd">$ project-shortlists</span></div>
+    <p class="meta">Metadata-only suitability review. No installed integration tests; no auto-installation or execution. Discovery rank is not project fit.</p>
+    <p class="meta" id="recommendation-coverage">{{ recommendation_coverage.reviewed_count|default('not supplied') }} reviewed / {{ recommendation_coverage.discovery_count|default('not supplied') }} discovery candidates · {{ recommendation_coverage.inventory_count|default(tool_items|length) }} inventory rows · shortlist limit: {{ recommendation_coverage.shortlist_limit_per_project|default(4) }} per project. Broad inventory retained; leaderboards are not full catalogs.</p>
+    {% for project_id, group in recommendation_groups.items() %}
+    <div class="project-group" data-project="{{ project_id }}">
+      <h2 class="item-name">{{ group.project }}</h2>
+      {% for category in ['shortlist', 'deferred', 'excluded'] %}
+      {% if category == 'shortlist' %}<div class="item-source">Shortlist ({{ group[category]|length }})</div>{% else %}<details class="evidence"><summary>{{ category|capitalize }} ({{ group[category]|length }})</summary>{% endif %}
+      <ul class="items">
+        {% for item in group[category] %}
+        <li class="item recommendation-item" data-id="{{ item.id }}" data-decision="{{ category }}">
+          <div class="item-line"><span class="item-name">{{ safe_link(item.source_urls|first|default(''), item.headline|default(item.id, true)) }}</span><span class="status">[metadata-only · not integration-tested]</span></div>
+          <div class="item-desc">Reason: {{ item.reason }}</div>
+          <div class="item-desc">Constraints:</div><ul class="evidence-list">{% for constraint in item.constraints %}<li>{{ constraint }}</li>{% else %}<li>Not supplied — validate prerequisites.</li>{% endfor %}</ul>
+          <div class="item-source">Discovery: {{ item.freshness.discovery }} · Official metadata: {{ item.freshness.official_metadata }}</div>
+          <div class="item-source">Confidence: {{ item.confidence }} · {{ item.confidence_reason }}</div>
+          <div class="item-source">Cost: {{ item.cost|default('unknown', true) }} · License: {{ item.license|default('unknown', true) }} · Support: {{ item.support|default('unknown', true) }}</div>
+          <div class="item-desc">Next validation: {{ item.next_validation }}</div>
+          <details class="evidence"><summary>Provenance links</summary><ul class="evidence-list">{% for url in item.source_urls %}<li>{{ safe_link(url, url) }}</li>{% else %}<li>No public provenance supplied.</li>{% endfor %}</ul></details>
+        </li>
+        {% else %}<li class="item empty-state">No {{ category }} candidates in this bounded review.</li>{% endfor %}
+      </ul>
+      {% if category != 'shortlist' %}</details>{% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+{% endset %}
+
+{% if public_export %}{{ project_shortlists_view }}{% endif %}
+  <!-- Original provider section, extended with independent probe metadata. -->
+  <section class="tracker api" id="providers" aria-label="Provider inventory">
     <div class="section-head"><span class="cmd">$ free-api-tracker</span></div>
-    <p class="meta">{{ api_items|length }} providers tracked</p>
+    {% if public_export %}
+    <p class="meta">Provider observations excluded from this public export — not assessed.</p>
+    {% else %}
+    <p class="meta">{{ api_items|length }} providers tracked · status is not a freshness claim</p>
     <ul class="items">
       {% for item in api_items %}
       <li class="item">
@@ -165,29 +273,202 @@
           <span class="status {{ item.status }}">[{{ item.status }}]</span>
         </div>
         <div class="item-desc">{{ item.description }}</div>
+        <div class="item-source">Actual status: {{ item.actual_status|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
+        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · Probe source: {{ item.probe_source|default('not supplied', true) }}</div>
+        {{ evidence_details(item.evidence|default([], true)) }}
       </li>
-      {% endfor %}
+      {% else %}<li class="item empty-state">No providers supplied.</li>{% endfor %}
     </ul>
+    {% endif %}
   </section>
 
-  <section class="tracker">
+  <section class="tracker news" id="news" aria-label="AI news inventory">
     <div class="section-head"><span class="cmd">$ ai-news-tracker</span></div>
+    {% if public_export %}
+    <p class="meta">News excluded from this public export — not assessed.</p>
+    {% else %}
+    {% if news_saved_total is not none and news_saved_total > (news_items|length) %}
+    <p class="meta">{{ news_items|length }} of {{ news_saved_total }} stories retained</p>
+    {% else %}
     <p class="meta">{{ news_items|length }} stories</p>
+    {% endif %}
+    <p class="meta">Dates distinguish publication from the saved observation; regenerating this report does not refresh either.</p>
     <ul class="items">
       {% for item in news_items %}
       <li class="item">
         <div class="item-line">
-          <span class="item-name"><a href="{{ item.url }}">{{ item.headline }}</a></span>
+          <span class="item-name">{{ safe_link(item.url, item.headline) }}</span>
         </div>
         <div class="item-desc">{{ item.summary }} <span class="item-source">— {{ item.source }}</span></div>
+        {% set publication = item.published_date|news_timestamp %}
+        {% set observation = item.fetched_date|news_timestamp(true) %}
+        <div class="item-source news-dates">Publication (UTC): {% if publication %}<time datetime="{{ publication }}">{{ publication }}</time>{% else %}unknown{% endif %} · Saved observation (UTC): {% if observation %}<time datetime="{{ observation }}">{{ observation }}</time>{% else %}unknown{% endif %}</div>
+      </li>
+      {% else %}<li class="item empty-state">No stories supplied.</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+{% if not public_export %}{{ project_shortlists_view }}{% endif %}
+
+  <!-- Extension: tools and model discoveries share the discovery contract. -->
+  <section class="tracker discoveries" id="discoveries" aria-label="Tool and model discoveries">
+    <div class="section-head"><span class="cmd">$ github-discovery</span></div>
+    <p class="meta" id="discovery-result-count" role="status" aria-live="polite" aria-controls="discovery-inventory">{{ tool_items|length }} discoveries collected &#8212; open the inventory below to browse and filter</p>
+    <p class="meta" id="discovery-empty" hidden>No discoveries match these filters.</p>
+    <noscript><p class="meta">Filters require JavaScript; every collected row is still reachable below, in the collapsible inventory archive.</p></noscript>
+    <div class="discovery-filters" role="search" aria-label="Filter tool and model discoveries">
+      <label for="discovery-search">Search discoveries</label>
+      <input id="discovery-search" type="search" placeholder="Headline, summary or evidence" aria-controls="discovery-list" disabled>
+      <label for="discovery-project">Project type</label>
+      <select id="discovery-project" aria-controls="discovery-list" disabled><option value="">All project types</option></select>
+      <label for="discovery-source">Discovery source</label>
+      <select id="discovery-source" aria-controls="discovery-list" disabled><option value="">All sources</option></select>
+    </div>
+    <details id="discovery-inventory" class="inventory"{% if not public_export %} open{% endif %}>
+    <summary>Browse {% if recommendation_coverage and recommendation_coverage.inventory_count is defined %}complete exported inventory &#8212; {{ tool_items|length }} of {{ recommendation_coverage.inventory_count }} collected rows{% else %}the exported inventory &#8212; {{ tool_items|length }} collected rows, total collected count not supplied{% endif %}, not recommendations</summary>
+    <ul class="items" id="discovery-list">
+      {% for item in tool_items %}
+      <li class="item discovery-item" data-source="{{ item.source }}" data-project-types='{{ item.project_types|default([], true)|tojson }}'>
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.headline) }}</span><span class="item-source">{{ item.source }}</span></div>
+        <div class="item-desc">{{ item.summary }}</div>
+        {% if item.public_metadata %}
+        <ul class="public-metadata evidence-list" aria-label="Public source metadata">
+          {% for field in item.public_metadata %}<li>{{ field.label }}: {{ field.value }}</li>{% endfor %}
+        </ul>
+        {% elif public_export %}
+        <div class="item-desc public-metadata-unavailable">Structured public metadata not supplied in this saved observation — consult the linked source.</div>
+        {% endif %}
+        <div class="item-source">ID: {{ item.id|default('not supplied', true) }} · Project types: {{ item.project_types|default([], true)|join(', ') or 'not supplied' }}</div>
+        <div class="item-source">Change: {{ item.change_type|default('not supplied', true) }} · Freshness: <span class="freshness">{{ item.freshness if item.freshness in ['fresh', 'stale', 'unverified'] else 'unverified' }}</span></div>
+        {{ evidence_details(item.evidence|default([], true)) }}
+      </li>
+      {% else %}<li class="item empty-state">No discoveries supplied.</li>{% endfor %}
+    </ul>
+    </details>
+  </section>
+
+{% if not public_export %}
+{% if not (change_items or baseline) %}{{ change_digest }}{% endif %}
+
+
+  <section class="tracker actions" id="actions" aria-label="Recommended actions">
+    <div class="section-head"><span class="cmd">$ next-actions</span></div>
+    <ul class="items">
+      {% for item in action_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.title) }}</span><span class="status">[{{ item.priority }}]</span></div>
+        <div class="item-desc">Reason: {{ item.reason }}</div>
+        <div class="item-desc">Action: {{ item.action }}</div>
+      </li>
+      {% else %}<li class="item empty-state">No actions supplied.</li>{% endfor %}
+    </ul>
+  </section>
+
+{% endif %}
+{% if news_health_items and not public_export %}
+  <section class="tracker source-health" id="news-feed-health" aria-label="News collection health">
+    <div class="section-head"><span class="cmd">$ news-feed-health</span></div>
+    <p class="meta">Current collection outcomes, not provider availability. Unknown means no current outcome supplied. Feed identities are hashed; source success does not prove complete feed coverage.</p>
+    <ul class="items">
+      {% for item in news_health_items %}
+      <li class="item news-health-row" data-news-identity="{{ item.source }}">
+        <div class="item-line"><span class="item-name">{{ item.kind }}: {{ item.source }}</span><span class="status">[{{ item.status }}]</span></div>
+        <div class="item-source">Current collection: {{ item.status }} · Items in current outcome: {{ item['items'] if item['items'] is not none else 'unknown' }}</div>
+        <div class="item-source">History — cumulative items from successful observations: {{ item.total_items if item.total_items is not none else 'unknown' }} (not unique retained news or current-run count) · Consecutive failures: {{ item.consecutive_failures if item.consecutive_failures is not none else 'unknown' }}</div>
+        <div class="item-source">Historical last success: {% if item.last_success %}<time datetime="{{ item.last_success }}">{{ item.last_success }}</time>{% else %}unknown{% endif %} · Historical last failure: {% if item.last_failure %}<time datetime="{{ item.last_failure }}">{{ item.last_failure }}</time>{% else %}unknown{% endif %}</div>
+        <div class="item-source">History cooldown: {{ item.cooldown }}{% if item.cooldown_until %} · Deadline: <time datetime="{{ item.cooldown_until }}">{{ item.cooldown_until }}</time>{% endif %}</div>
+        {% if item.current_error %}<div class="item-source">Current failure classification: {{ item.current_error }}</div>{% endif %}
+        {% if item.historical_error %}<div class="item-source">Historical failure classification: {{ item.historical_error }}</div>{% endif %}
       </li>
       {% endfor %}
     </ul>
   </section>
-  <!-- ===== end editable content ===== -->
+{% endif %}
 
-  <footer>close the world, open the next tab · generated on mira · {{ generated_at }}</footer>
+  <section class="tracker source-health" id="source-health" aria-label="Source health and coverage">
+    <div class="section-head"><span class="cmd">$ source-health</span></div>
+    <p class="meta">Collection health and coverage; not provider availability.</p>
+    <ul class="items">
+      {% for item in source_items %}
+      <li class="item">
+        <div class="item-line"><span class="item-name">{{ safe_link(item.url, item.name) }}</span><span class="status">[{{ item.status|default('unverified', true) }}]</span></div>
+        <div class="item-source">Checked: {{ item.checked_at|default('not supplied', true) }} · {{ item.item_count|default('unknown') }} items · Coverage: {{ item.coverage|default('not supplied', true) }}</div>
+        {% if item.error %}<div class="item-desc">Error: {{ item.error }}</div>{% endif %}
+      </li>
+      {% else %}<li class="item empty-state">Source health not supplied — coverage unverified.</li>{% endfor %}
+    </ul>
+  </section>
+
+
+
+  <footer>close the world, open the next tab · generated by tracker-core · {{ runtime_source|default("runtime not supplied", true) }} · {{ generated_at }} (report generation, not a probe timestamp)</footer>
 
 </div>
+<script>
+(() => {
+  'use strict';
+  const section = document.getElementById('discoveries');
+  if (!section) return;
+  const rows = Array.from(section.querySelectorAll('.discovery-item'));
+  const search = document.getElementById('discovery-search');
+  const project = document.getElementById('discovery-project');
+  const source = document.getElementById('discovery-source');
+  const records = rows.map(row => ({
+    row,
+    text: row.textContent.toLowerCase(),
+    source: row.dataset.source,
+    types: JSON.parse(row.dataset.projectTypes)
+  }));
+  const addOptions = (select, values) => {
+    Array.from(new Set(values)).filter(Boolean).sort().forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+  };
+  addOptions(project, records.flatMap(record => record.types));
+  addOptions(source, records.map(record => record.source));
+  const applyFilters = () => {
+    const term = search.value.trim().toLowerCase();
+    let visible = 0;
+    records.forEach(record => {
+      const matches = record.text.includes(term) &&
+        (!project.value || record.types.includes(project.value)) &&
+        (!source.value || record.source === source.value);
+      record.row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    const archive = document.getElementById('discovery-inventory');
+    const filtered = visible !== records.length;
+    const status = document.getElementById('discovery-result-count');
+    // A collapsed archive would hide the rows the filter just selected.
+    if (archive) {
+      if (filtered) archive.open = true;
+      // Pinned open while filtered, so the reader is told why it will not
+      // stay closed. Clearing the filter releases the pin.
+      if (filtered) archive.dataset.pinned = 'true';
+      else delete archive.dataset.pinned;
+    }
+    const open = !archive || archive.open;
+    // The status names the disclosure state so it never implies rows are on
+    // screen while the archive they live in is collapsed.
+    status.textContent = filtered
+      ? `${visible} of ${records.length} discoveries match the filters`
+      : (open
+        ? `${records.length} discoveries, no filter applied`
+        : `${records.length} discoveries collected \u2014 open the inventory below to browse and filter`);
+    document.getElementById('discovery-empty').hidden = visible > 0 || records.length === 0;
+  };
+  search.addEventListener('input', applyFilters);
+  project.addEventListener('change', applyFilters);
+  source.addEventListener('change', applyFilters);
+  applyFilters();
+  const archive = document.getElementById('discovery-inventory');
+  if (archive) archive.addEventListener('toggle', applyFilters);
+  [search, project, source].forEach(control => { control.disabled = false; });
+})();
+</script>
 </body>
 </html>

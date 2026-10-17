@@ -72,10 +72,14 @@ class TelegramNotifier(BaseNotifier):
                     logger.info("Telegram notification sent")
                     return True
                 else:
-                    logger.error(f"Telegram API error: {response.text}")
+                    # Never log the response body: it can echo the request URL,
+                    # and the bot token is part of that URL's path.
+                    logger.error("Telegram API error: HTTP %s", response.status_code)
                     return False
         except Exception as e:
-            logger.error(f"Failed to send Telegram notification: {e}")
+            # httpx embeds the full request URL - including the bot token - in its
+            # exception message. Log the exception CLASS only, never the message.
+            logger.error("Failed to send Telegram notification: %s", type(e).__name__)
             return False
 
 
@@ -162,10 +166,11 @@ class DiscordNotifier(BaseNotifier):
                     logger.info("Discord notification sent")
                     return True
                 else:
-                    logger.error(f"Discord API error: {response.text}")
+                    # The error body can echo the Authorization header value.
+                    logger.error("Discord API error: HTTP %s", response.status_code)
                     return False
         except Exception as e:
-            logger.error(f"Failed to send Discord notification: {e}")
+            logger.error("Failed to send Discord notification: %s", type(e).__name__)
             return False
 
 
@@ -179,22 +184,29 @@ class MultiNotifier(BaseNotifier):
         self.notifiers = notifiers
     
     async def send(self, message: str) -> bool:
-        """Send to all channels. Returns True if at least one succeeded."""
+        """Send to every selected channel; report success only if all succeeded.
+
+        A partial fan-out is a delivery failure, not a success: reporting True
+        for "at least one channel worked" silently hides a broken destination.
+        """
         import asyncio
-        
+
         tasks = [n.send(message) for n in self.notifiers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        any_ok = False
+
+        all_ok = True
         for notifier, result in zip(self.notifiers, results):
-            if isinstance(result, Exception):
-                logger.error(f"{notifier.name} notifier error: {result}")
+            if isinstance(result, BaseException):
+                # Exception MESSAGE only: it can embed request URLs or headers.
+                logger.error("%s notifier error: %s", notifier.name, type(result).__name__)
+                all_ok = False
             elif result:
-                any_ok = True
+                continue
             else:
-                logger.warning(f"{notifier.name} notifier returned False")
-        
-        return any_ok
+                logger.warning("%s notifier returned False", notifier.name)
+                all_ok = False
+
+        return all_ok
 
 
 def get_notifier(config: dict[str, Any]) -> BaseNotifier:
