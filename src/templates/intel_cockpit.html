@@ -212,6 +212,9 @@
                     const div = document.createElement("div");
                     div.className = "source-toggle";
                     div.innerHTML = `
+                        <input type="hidden" name="sources[${source.id}][name]" value="${source.name}">
+                        <input type="hidden" name="sources[${source.id}][adapter]" value="${source.adapter}">
+                        ${source.url ? `<input type="hidden" name="sources[${source.id}][url]" value="${source.url}">` : ''}
                         <input type="checkbox" name="sources[${source.id}][enabled]" 
                                ${source.enabled ? "checked" : ""} 
                                onchange="this.form.requestSubmit()">
@@ -248,10 +251,19 @@
                 sources: [],
             };
 
-            // Collect source enabled states
+            // Collect source details (id, name, adapter, enabled, url)
             document.querySelectorAll('#sources-list input[type="checkbox"]').forEach(cb => {
                 const sourceId = cb.name.match(/sources\[([^\]]+)\]\[enabled\]/)[1];
-                settings.sources.push({ id: sourceId, enabled: cb.checked });
+                const nameInput = document.querySelector(`#sources-list input[name="sources[${sourceId}][name]"]`);
+                const adapterInput = document.querySelector(`#sources-list input[name="sources[${sourceId}][adapter]"]`);
+                const urlInput = document.querySelector(`#sources-list input[name="sources[${sourceId}][url]"]`);
+                settings.sources.push({
+                    id: sourceId,
+                    name: nameInput ? nameInput.value : '',
+                    adapter: adapterInput ? adapterInput.value : '',
+                    enabled: cb.checked,
+                    url: urlInput ? urlInput.value : undefined,
+                });
             });
 
             try {
