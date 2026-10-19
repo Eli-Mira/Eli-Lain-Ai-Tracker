@@ -301,7 +301,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 with _scan_state["lock"]:
                     _scan_state["running"] = False
                     _scan_state["status"] = "failed"
-                    _scan_state["last_error"] = str(e)
+                    _scan_state["last_error"] = f"Scan failed ({type(e).__name__})"
                     _scan_state["last_report"] = None
         
         thread = threading.Thread(target=run_scan_worker, daemon=True)
