@@ -1025,6 +1025,11 @@ async def verify_candidates(candidates: list[dict[str, Any]], settings: dict[str
     validated against the same SSRF policy as _safe_get — private hosts,
     scheme downgrades, credentials, and loops are all rejected at the
     redirect seam, not merely avoided by client.follow_redirects=False.
+
+    When HEAD answers 404/405 (endpoints that only serve GET, observed on
+    the UnoRouter pricing catalog), one bounded GET re-verifies through the
+    same guarded transport; a 200 GET marks the link verified. WAF-flagged
+    and other non-200 statuses stay unverified and are never re-probed.
     """
     now = now or _now_aware()
     now_iso = now.isoformat()
@@ -1075,6 +1080,31 @@ async def verify_candidates(candidates: list[dict[str, Any]], settings: dict[str
                                         "checked_at": now_iso, "url": url, "http_status": http_status}}
 
                     await response.aclose()
+                    if http_status != 200 and http_status in (404, 405):
+                        # Some approved catalog endpoints (observed on the
+                        # UnoRouter pricing API) answer 404/405 to HEAD while
+                        # serving GET on the same URL the source adapter
+                        # fetched successfully moments earlier; marking those
+                        # unverified excluded genuinely fresh free-tier
+                        # records. Re-verify with one bounded GET through the
+                        # identical guarded client: every SSRF, WAF, byte-cap
+                        # and deadline check applies unchanged. WAF-flagged
+                        # and 401/403 responses are never re-probed.
+                        try:
+                            get_response, _ = await asyncio.wait_for(
+                                _safe_get(client, url, timeout=deadline),
+                                timeout=deadline,
+                            )
+                            get_status = get_response.status_code
+                            get_waf = _is_waf_response(get_status, dict(get_response.headers), "")
+                            await get_response.aclose()
+                            if not get_waf and get_status == 200:
+                                return {**cand, "link_verification": {
+                                            "status": "verified",
+                                            "checked_at": now_iso, "url": url,
+                                            "http_status": get_status}}
+                        except Exception:
+                            logger.debug("GET fallback verification failed")
                     status = "verified" if http_status == 200 else "unverified"
                     return {**cand, "link_verification": {"status": status,
                                     "checked_at": now_iso, "url": url, "http_status": http_status}}
