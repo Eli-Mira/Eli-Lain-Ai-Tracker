@@ -15,7 +15,7 @@ _SECRET_RE = re.compile(
     r'password\s*[=:]?\s*\S+)'
 )
 _PATH_RE = re.compile(
-    r'''https?://[^\s<>"']+|(?<![a-zA-Z])[a-zA-Z]:[/\\]|/(?:home|tmp|var|etc|root|usr)/''',
+    r'''https?://[^\s<>"']+|(?<![a-zA-Z])[a-zA-Z]:[/\\]\S*|/(?:home|tmp|var|etc|root|usr)/\S*''',
     re.IGNORECASE,
 )
 _CONTROL_RE = re.compile(r'[\x00-\x1f\x7f]')
