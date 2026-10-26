@@ -404,7 +404,8 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
                 })""")
             page.evaluate("document.body.style.zoom = '100%'")
             page.keyboard.press("Tab")
-            assert page.locator(":focus").get_attribute("href") == "#daily-digest"
+            assert page.locator(":focus").get_attribute("href") == "#main"
+            assert page.locator("main#main").count() == 1
             page.screenshot(path=str(tmp_path / "genuine-daily.png"), full_page=True)
             if javascript_enabled:
                 page.locator("#discovery-search").focus()
@@ -420,7 +421,7 @@ def test_genuine_generated_daily_artifact_in_chromium(tmp_path, viewport, javasc
             browser.close()
 
 
-@pytest.mark.parametrize("viewport", [{"width": 1440, "height": 1000}, {"width": 390, "height": 844}])
+@pytest.mark.parametrize("viewport", [{"width": 1440, "height": 1000}, {"width": 390, "height": 844}, {"width": 320, "height": 844}])
 @pytest.mark.parametrize("javascript_enabled", [True, False])
 def test_generated_digest_no_horizontal_overflow_at_200pct_zoom(tmp_path, viewport, javascript_enabled):
     """Synthetic layout stress through the real sanitized export, not Jinja rewrites."""
@@ -466,6 +467,7 @@ def test_generated_digest_no_horizontal_overflow_at_200pct_zoom(tmp_path, viewpo
                             gridColumns:s.gridTemplateColumns,overflowWrap:s.overflowWrap};
                     }).filter(r => r.right > innerWidth + 0.5 || r.scrollWidth > r.clientWidth + 1).slice(0,20)
                 })""")
+                assert page.evaluate("Array.from(document.querySelectorAll('.meta-bar, footer, .grid')).every(el => el.scrollWidth <= el.clientWidth + 1)")
             assert not errors
             assert requests and all(url.startswith(("file:", "data:")) for url in requests)
             context.close()
