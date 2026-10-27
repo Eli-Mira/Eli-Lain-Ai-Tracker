@@ -4,14 +4,14 @@ States: TODO / IN_PROGRESS / PASS / FAIL / BLOCKED / DEFERRED. PASS needs verifi
 
 | ID | Task | Deps | State |
 |---|---|---|---|
-| M3.1 | Per-candidate exclusion codes in private evidence; frozen-now determinism | - | IN_PROGRESS |
-| M3.2 | UnoRouter GET-vs-HEAD reuse (fetch-time GET evidence, no duplicate call) | - | IN_PROGRESS (fallback landed a41e3fb) |
-| M3.3 | License evidence states (none-declared vs lookup-failure vs verified); policy untouched | - | IN_PROGRESS |
-| M4 | Source registry module + schema tests + registry doc, disabled-by-default | M3 | TODO |
-| M5 | Offline fixture adapters: vendor RSS, GitHub releases, Replace.so reference, research/HF | M4 | TODO |
-| M6 | Evidence module: canonical URL/entity, corroboration grouping, novelty vs baseline | M4 | TODO |
-| M7 | Report sections + honest quiet states verified on current bytes | M6 | TODO |
-| M8 | Security negative fixtures for new code paths | M5 | TODO |
+| M3.1 | Per-candidate exclusion codes in private evidence; frozen-now determinism | - | PASS (970805a) |
+| M3.2 | UnoRouter GET-vs-HEAD reuse (fetch-time GET evidence, no duplicate call) | - | PASS (a41e3fb + 970805a) |
+| M3.3 | License evidence states (none-declared vs lookup-failure vs verified); policy untouched | - | PASS (970805a) |
+| M4 | Source registry module + schema tests + registry doc, disabled-by-default | M3 | PASS (4da263b) |
+| M5 | Offline fixture adapters: vendor RSS, GitHub releases, Replace.so reference, research/HF | M4 | PASS (9f31d48; 5 new families incl. research feeds) |
+| M6 | Evidence module: canonical URL/entity, corroboration grouping, novelty vs baseline | M4 | PASS (9f31d48 + run-level baseline in next commit) |
+| M7 | Report sections + honest quiet states verified on current bytes | M6 | PASS (sections/filters/empty states pre-existing and verified; run-level novelty persisted; 320px fixed in ab44585) |
+| M8 | Security negative fixtures for new code paths | M5 | PASS (injection inert at render, forged dates, oversized feed, rate-limit stop, enablement fail-closed) |
 | M9 | Focused suites + full regression on final bytes | M8 | TODO |
 | M10 | Internal RC pack: registry, demo, status, owner decision sheet | M9 | TODO |
 
