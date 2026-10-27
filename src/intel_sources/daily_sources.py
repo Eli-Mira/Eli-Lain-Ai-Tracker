@@ -622,8 +622,8 @@ async def _fetch_github_trending(client: httpx.AsyncClient, now_iso: str) -> tup
             repo_url = f"https://github.com/{name}"
             # Bounded public repository metadata lookup for source-code licensing.
             # No credentials; failures stay unknown (no free entitlement).
-            spdx_id = license_meta.get(name)
-            if spdx_id is None and len(license_meta) < 5:
+            cached = license_meta.get(name)
+            if cached is None and len(license_meta) < 5:
                 try:
                     meta = await _fetch_json(client, f"https://api.github.com/repos/{name}",
                                              extra_headers={"Accept": "application/vnd.github+json",
@@ -632,21 +632,28 @@ async def _fetch_github_trending(client: httpx.AsyncClient, now_iso: str) -> tup
                     full_name = meta.get("full_name") or name
                     if full_name.lower() != name.lower():
                         repo_url = f"https://github.com/{full_name}"
+                    lookup = "verified" if spdx_id else "no_license"
                 except Exception:
                     logger.debug("GitHub license metadata lookup failed for %s", name)
                     spdx_id = None
-                license_meta[name] = (spdx_id, repo_url)
+                    lookup = "unavailable"
+                license_meta[name] = (spdx_id, repo_url, lookup)
             else:
-                spdx_id, repo_url = spdx_id or (None, repo_url)
+                spdx_id, repo_url, lookup = cached
             if spdx_id in _OPEN_SOURCE_LICENSES:
                 free_status = "open-source"
                 free_detail = f"GitHub repository license: {spdx_id} (verified via api.github.com)"
             elif spdx_id:
                 free_status = "unknown"
                 free_detail = f"GitHub repository license: {spdx_id} (not an approved OSI license)"
+            elif lookup == "no_license":
+                free_status = "unknown"
+                free_detail = ("GitHub metadata reports no license file; open-source status "
+                               "unverified, not classified proprietary")
             else:
                 free_status = "unknown"
-                free_detail = "GitHub public repository; license not verified"
+                free_detail = ("GitHub license lookup unavailable (rate limit or error); "
+                               "open-source status unverified")
             candidate = {
                 "id": f"github:{name.lower()}",
                 "name": name,
@@ -750,25 +757,34 @@ async def _fetch_skills_hot(client: httpx.AsyncClient, now_iso: str) -> tuple[li
             name = name_el.get_text(strip=True) if name_el else slug
             # Bounded public GitHub repository metadata lookup for the skill's
             # source-code license. A listing alone is never free-tier.
-            spdx_id = license_meta.get(f"{owner}/{repo}")
-            if spdx_id is None and len(license_meta) < 5:
+            cached = license_meta.get(f"{owner}/{repo}")
+            if cached is None and len(license_meta) < 5:
                 try:
                     meta = await _fetch_json(client, f"https://api.github.com/repos/{owner}/{repo}",
                                              extra_headers={"Accept": "application/vnd.github+json", "User-Agent": _GITHUB_USER_AGENT})
                     spdx_id = (meta.get("license") or {}).get("spdx_id")
+                    lookup = "verified" if spdx_id else "no_license"
                 except Exception:
                     logger.debug("GitHub license metadata lookup failed for %s/%s", owner, repo)
                     spdx_id = None
-                license_meta[f"{owner}/{repo}"] = spdx_id
+                    lookup = "unavailable"
+                license_meta[f"{owner}/{repo}"] = (spdx_id, lookup)
+            else:
+                spdx_id, lookup = cached
             if spdx_id in _OPEN_SOURCE_LICENSES:
                 free_status = "open-source"
                 free_detail = f"Skills.sh skill source repository license: {spdx_id} (verified via api.github.com)"
             elif spdx_id:
                 free_status = "unknown"
                 free_detail = f"Skills.sh skill source repository license: {spdx_id} (not an approved OSI license)"
+            elif lookup == "no_license":
+                free_status = "unknown"
+                free_detail = ("Skill source repository metadata reports no license file; "
+                               "open-source status unverified, not classified proprietary")
             else:
                 free_status = "unknown"
-                free_detail = "Skills.sh public skill listing; source-code license not verified"
+                free_detail = ("Skill source repository license lookup unavailable (rate limit or error); "
+                               "open-source status unverified")
             what = description
             why = (f"Public skill on Skills.sh at {owner}/{repo}/{slug}: {description}.")
             candidate = {
@@ -846,6 +862,11 @@ async def _fetch_unorouter(client: httpx.AsyncClient, now_iso: str) -> tuple[lis
     try:
         data = await _fetch_json(client, url)
         models = data.get("models", [])
+        # The catalog URL itself was just fetched successfully with the guarded
+        # GET path (status, size, WAF and deadline checks all passed). Candidates
+        # built below carry that GET evidence (_source_get_verified) so link
+        # verification does not re-request it and does not misread a GET-only
+        # endpoint's 404-on-HEAD as a dead link.
         # UnoRouter's release_ts is a real upstream release timestamp (ms epoch).
         # Sort descending so the latest releases surface first.
         dated = sorted(
@@ -914,6 +935,7 @@ async def _fetch_unorouter(client: httpx.AsyncClient, now_iso: str) -> tuple[lis
                          "evidence_url": url},
                 "api": {"status": "available", "detail": "REST endpoint", "evidence_url": url},
                 "topics": ["models"] + (["free-api"] if free_status == "free-tier" else []),
+                "_source_get_verified": now_iso,
             }
             candidates.append(candidate)
             status_info["returned"] += 1
@@ -1060,6 +1082,16 @@ async def verify_candidates(candidates: list[dict[str, Any]], settings: dict[str
                     if not _is_safe_host(parsed.hostname):
                         return {**cand, "link_verification": {"status": "unverified",
                                         "checked_at": now_iso, "url": url, "http_status": None}}
+                    # Same-run guarded GET evidence: the source adapter already
+                    # fetched exactly this URL with every safety check passing,
+                    # which is stronger evidence than a fresh HEAD and avoids a
+                    # duplicate request. HTTPS + safe-host revalidation above
+                    # still applies.
+                    if cand.get("_source_get_verified"):
+                        return {**cand, "link_verification": {
+                                    "status": "verified",
+                                    "checked_at": cand["_source_get_verified"],
+                                    "url": url, "http_status": 200}}
 
                     # Use _safe_head for redirect-safe HEAD verification.
                     # _safe_head validates every redirect hop through the same

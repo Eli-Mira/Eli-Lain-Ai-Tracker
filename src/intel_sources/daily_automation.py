@@ -126,9 +126,12 @@ async def run_daily(settings_path: str | Path | None = None, data_dir: str | Pat
     fetched = await fetch_candidates(cfg, now)
     verified = await verify_candidates(fetched['candidates'], cfg, now)
 
-    # Build digest
+    # Build digest — include_rejections adds per-candidate exclusion codes for
+    # PRIVATE raw evidence only; the key is popped before the public export so
+    # served bytes keep the exact prior schema.
     collection = {'candidates': verified, 'sources': fetched['sources']}
-    digest = build_digest(collection, cfg, now)
+    digest = build_digest(collection, cfg, now, include_rejections=True)
+    rejections = digest.pop('rejections', [])
 
     # Public export — caller-selected public_dir is the exact producer output
     export_dir = Path(public_dir) if public_dir is not None else data_dir / 'public'
@@ -143,6 +146,9 @@ async def run_daily(settings_path: str | Path | None = None, data_dir: str | Pat
         'sources': fetched['sources'],
         'settings': cfg,
         'generated_at': digest.get('generated_at'),
+        # Per-candidate exclusion codes ({id, reason}) for offline diagnosis;
+        # never exported publicly.
+        'rejections': rejections,
     }
     evidence_path = state_dir / 'raw_evidence.json'
     _atomic_json(evidence_path, raw_evidence)
