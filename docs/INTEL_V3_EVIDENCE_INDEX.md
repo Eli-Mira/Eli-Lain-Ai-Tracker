@@ -12,3 +12,4 @@
 | V3 M9 | Full suite at 1c2a8c2: 1537P/6S/0F exit 0 | 1c2a8c2 |
 | V3 final | Full suite on true final bytes (incl. HF adapter): 1539P/6S/0F, exit 0, 215s (Windows, venv python, Chromium 1248 via PLAYWRIGHT_EXECUTABLE_PATH) | git HEAD |
 | V3 M10 | Offline demo replay: busy-day (4 selected, corroborated, traceable exclusions) + sparse-day (0 selected, honest empty state) + metrics.json; 51/51 src modules byte-compile + import clean | scripts/build_v3_demo.py, demo-output/ |
+| Publish | Public main d1878db..a8c1144 (sanitized 88-file delta, 0 privacy hits, 1553P/7S/0F in published tree) | EliLain-Intel-Public a8c1144 |

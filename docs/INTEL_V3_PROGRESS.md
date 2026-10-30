@@ -9,3 +9,5 @@
 - M10 PASS: this report + registry + blockers = internal RC pack (local only).
 - MERGE EXECUTED (owner sign-off 2026-10-31): local fast-forward of release/verified-e2e-20261015-0115 from a857c5b to c9f5efb; tree hash 9386fb3... identical to the 1539P/6S/0F-tested bytes; remote origin/release still at a857c5b (nothing pushed).
 - NEXT SAFE ACTION: owner per-source activation decisions from the registry; explicit push authorization for the release branch remains a separate owner gate.
+
+2026-10-31 PUBLISHED (owner-confirmed): sanitized candidate a8c1144 pushed to public EliLain-Intel-Public main (d1878db..a8c1144, fast-forward, no force). 88-file scrubbed delta; personal/audit-path sweep 0 hits; suite in published tree 1553P/7S/0F exit 0. Cloudflare Pages (eli-lain-intel.pages.dev) still serves v0.1.0 bytes until an explicit redeploy is requested. Staging worktree EliLain-Intel-Public-stage/v0.2.0-rc retained as local mirror.
