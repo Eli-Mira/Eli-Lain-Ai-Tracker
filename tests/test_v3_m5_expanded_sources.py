@@ -195,3 +195,46 @@ def test_replace_so_reference_zero_network_and_validated_rows():
 def test_normalize_feed_entry_skips_missing_link_or_title():
     assert normalize_feed_entry({"title": "no link"}, "s", "S", NOW, "u") is None
     assert normalize_feed_entry({"link": "https://x.example.com/a"}, "s", "S", NOW, "u") is None
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face Hub models (documented API, metadata only, no inference)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_hf_models_normalizes_bounded_metadata():
+    from intel_sources.expanded_sources import fetch_hf_models
+    rows = [
+        {"modelId": "org/model-a", "lastModified": "2026-10-25T00:00:00.000Z",
+         "likes": 12, "downloads": 3400},
+        {"id": "org/model-b", "lastModified": None},
+        {"modelId": ""},
+    ]
+    with patch("intel_sources.daily_sources._fetch_json", new_callable=AsyncMock,
+               return_value=rows):
+        candidates, status = await fetch_hf_models(
+            None, {"id": "hf-models-hub", "name": "HF models", "limit": 10}, NOW)
+    assert status["status"] == "ok"
+    assert len(candidates) == 2
+    first = candidates[0]
+    assert first["id"] == "hf:org/model-a"
+    assert first["evidence_kind"] == "documented_api"
+    assert first["date_kind"] == "updated_at"
+    assert first["published_at"] == "2026-10-25T00:00:00.000Z"
+    assert "not a benchmark" in first["what"]
+    assert first["free"]["status"] == "unknown"  # metadata is never license evidence
+    # bounded API request carries the documented limit
+    with patch("intel_sources.daily_sources._fetch_json", new_callable=AsyncMock) as mock_json:
+        mock_json.return_value = []
+        await fetch_hf_models(None, {"id": "hf-models-hub", "limit": 99}, NOW)
+    requested = mock_json.await_args.args[1]
+    assert "limit=30" in requested  # clamped to the documented bound
+
+
+@pytest.mark.asyncio
+async def test_hf_models_failure_is_honest_source_error():
+    from intel_sources.expanded_sources import fetch_hf_models
+    with patch("intel_sources.daily_sources._fetch_json", new_callable=AsyncMock,
+               side_effect=TimeoutError("timed out")):
+        candidates, status = await fetch_hf_models(None, {"id": "hf-models-hub"}, NOW)
+    assert candidates == []
+    assert status["status"] == "error" and status["error_code"] == "source_failed"

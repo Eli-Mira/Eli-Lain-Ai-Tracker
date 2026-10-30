@@ -292,3 +292,67 @@ def fetch_replace_so_reference(cfg: dict[str, Any], now_iso: str | None = None) 
         candidates.append(cand)
     note = f"curated rows: {len(rows)}; skipped: {skipped}"
     return candidates, _ok_status(source_id, source_name, now_iso, len(rows), len(candidates), note)
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face Hub model metadata (documented public API, keyless)
+# ---------------------------------------------------------------------------
+async def fetch_hf_models(client: Any, cfg: dict[str, Any], now_iso: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch recently-updated model metadata from the documented Hub API.
+
+    Keyless, bounded (``limit``, default 10, max 30), GET-only. A model card
+    is upstream source metadata, not an independent benchmark; license and
+    free-tier claims stay UNKNOWN unless separately evidenced. No inference
+    is ever triggered — metadata discovery only.
+    """
+    from .daily_sources import _fetch_json
+
+    now_iso = _now_iso(now_iso)
+    source_id = cfg.get("id", "hf-models-hub")
+    source_name = cfg.get("name", "Hugging Face models")
+    try:
+        limit = max(1, min(int(cfg.get("limit", 10)), 30))
+    except (TypeError, ValueError):
+        limit = 10
+    url = (f"https://huggingface.co/api/models?sort=lastModified&direction=-1"
+           f"&limit={limit}&full=false")
+    try:
+        rows = await _fetch_json(client, url)
+        if not isinstance(rows, list):
+            raise ValueError("unexpected Hub response shape")
+    except Exception:
+        logger.debug("HF Hub fetch failed")
+        return [], _error_status(source_id, source_name, now_iso, "source_failed",
+                                 "Hub metadata fetch failed")
+    candidates: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("modelId") or row.get("id") or "").strip()
+        if not model_id:
+            continue
+        model_url = f"https://huggingface.co/{model_id}"
+        last_modified = row.get("lastModified") or None
+        likes = row.get("likes") if isinstance(row.get("likes"), int) else None
+        downloads = row.get("downloads") if isinstance(row.get("downloads"), int) else None
+        signals = []
+        if likes is not None:
+            signals.append(f"likes={likes}")
+        if downloads is not None:
+            signals.append(f"downloads={downloads}")
+        signal_text = f" ({', '.join(signals)})" if signals else ""
+        cand = _candidate_base(source_id, source_name, model_url, now_iso, "models",
+                               f"Recently updated model repository on the Hugging Face Hub"
+                               f"{signal_text}; metadata is upstream self-description.")
+        if cand is None:
+            continue
+        cand["id"] = f"hf:{model_id}"
+        cand["name"] = model_id
+        cand["what"] = (f"Hub repository {model_id} last modified {last_modified or 'unknown'}"
+                        f"{signal_text}. Card text is upstream metadata, not a benchmark.")
+        cand["published_at"] = last_modified
+        cand["date_kind"] = "updated_at"
+        cand["evidence_kind"] = "documented_api"
+        candidates.append(cand)
+    note = f"bounded to latest {limit} by lastModified"
+    return candidates, _ok_status(source_id, source_name, now_iso, limit, len(candidates), note)
